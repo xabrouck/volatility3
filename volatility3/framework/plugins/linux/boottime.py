@@ -7,6 +7,7 @@ from typing import List, Tuple, Iterable
 
 from volatility3.framework import interfaces, renderers
 from volatility3.framework.configuration import requirements
+from volatility3.framework.constants import architectures
 from volatility3.plugins import timeliner
 from volatility3.plugins.linux import pslist
 
@@ -23,7 +24,7 @@ class Boottime(interfaces.plugins.PluginInterface, timeliner.TimeLinerInterface)
             requirements.ModuleRequirement(
                 name="kernel",
                 description="Linux kernel",
-                architectures=["Intel32", "Intel64"],
+                architectures=architectures.LINUX_ARCHS,
             ),
             requirements.VersionRequirement(
                 name="timeliner",

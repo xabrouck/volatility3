@@ -6,8 +6,9 @@ from typing import List
 
 import volatility3.framework.symbols.linux.utilities.modules as linux_utilities_modules
 from volatility3 import framework
-from volatility3.framework import interfaces, renderers
+from volatility3.framework import interfaces, renderers, exceptions
 from volatility3.framework.configuration import requirements
+from volatility3.framework.constants import architectures
 from volatility3.framework.renderers import format_hints
 from volatility3.framework.objects import utility
 
@@ -29,7 +30,7 @@ class ModuleExtract(interfaces.plugins.PluginInterface):
             requirements.ModuleRequirement(
                 name="kernel",
                 description="Windows kernel",
-                architectures=["Intel32", "Intel64"],
+                architectures=architectures.LINUX_ARCHS,
             ),
             requirements.IntRequirement(
                 name="base",

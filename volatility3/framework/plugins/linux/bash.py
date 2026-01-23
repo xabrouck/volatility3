@@ -10,6 +10,7 @@ from typing import List
 
 from volatility3.framework import constants, renderers, symbols, interfaces
 from volatility3.framework.configuration import requirements
+from volatility3.framework.constants import architectures
 from volatility3.framework.interfaces import plugins
 from volatility3.framework.layers import scanners
 from volatility3.framework.objects import utility
@@ -30,7 +31,7 @@ class Bash(plugins.PluginInterface, timeliner.TimeLinerInterface):
             requirements.ModuleRequirement(
                 name="kernel",
                 description="Linux kernel",
-                architectures=["Intel32", "Intel64"],
+                architectures=architectures.LINUX_ARCHS,
             ),
             requirements.VersionRequirement(
                 name="pslist", component=pslist.PsList, version=(4, 0, 0)

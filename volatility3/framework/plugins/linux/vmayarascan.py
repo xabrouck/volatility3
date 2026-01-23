@@ -7,6 +7,7 @@ from typing import Iterable, List, Tuple
 
 from volatility3.framework import interfaces, renderers
 from volatility3.framework.configuration import requirements
+from volatility3.framework.constants import architectures
 from volatility3.framework.renderers import format_hints
 from volatility3.plugins import yarascan
 from volatility3.plugins.linux import pslist
@@ -42,7 +43,7 @@ class VmaYaraScan(interfaces.plugins.PluginInterface):
             requirements.ModuleRequirement(
                 name="kernel",
                 description="Linux kernel",
-                architectures=["Intel32", "Intel64"],
+                architectures=architectures.LINUX_ARCHS,
             ),
         ]
 

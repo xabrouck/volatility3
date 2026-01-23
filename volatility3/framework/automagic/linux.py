@@ -8,7 +8,7 @@ from typing import Optional, Tuple
 from volatility3.framework import constants, interfaces
 from volatility3.framework.automagic import symbol_cache, symbol_finder
 from volatility3.framework.configuration import requirements
-from volatility3.framework.layers import intel, scanners
+from volatility3.framework.layers import arm, intel, scanners
 from volatility3.framework.symbols import linux
 
 vollog = logging.getLogger(__name__)
@@ -69,6 +69,14 @@ class LinuxIntelStacker(interfaces.automagic.StackerLayerInterface):
                     layer_name,
                     progress_callback=progress_callback,
                 )
+
+                # Skip if this is an AArch64 kernel (detected by pt_regs size)
+                # AArch64: 320 bytes (40 regs × 8), x86_64: ~168 bytes
+                if table.has_type("pt_regs"):
+                    pt_regs_size = table.get_type("pt_regs").size
+                    if pt_regs_size >= 300:  # Likely AArch64
+                        vollog.debug(f"Skipping Intel stacker for AArch64 kernel (pt_regs size: {pt_regs_size})")
+                        continue
 
                 if "init_top_pgt" in table.symbols:
                     layer_class = intel.LinuxIntel32e
@@ -206,6 +214,172 @@ class LinuxIntelStacker(interfaces.automagic.StackerLayerInterface):
         if addr > 0xFFFFFFFF80000000:
             return addr - 0xFFFFFFFF80000000
         return addr - 0xC0000000
+
+
+class LinuxAArch64Stacker(interfaces.automagic.StackerLayerInterface):
+    stack_order = 35
+    exclusion_list = ["mac", "windows"]
+
+    @classmethod
+    def stack(
+        cls,
+        context: interfaces.context.ContextInterface,
+        layer_name: str,
+        progress_callback: constants.ProgressCallback = None,
+    ) -> Optional[interfaces.layers.DataLayerInterface]:
+        """Attempts to identify linux AArch64 within this layer."""
+        layer = context.layers[layer_name]
+        join = interfaces.configuration.path_join
+
+        # Never stack on top of an existing translation layer
+        if isinstance(layer, (intel.Intel, arm.AArch64)):
+            return None
+
+        linux_banners = symbol_cache.load_cache_manager().get_identifier_dictionary(
+            operating_system="linux"
+        )
+        if not linux_banners:
+            vollog.info(
+                "No Linux banners found - if this is a linux plugin, please check your symbol files location"
+            )
+            return None
+
+        mss = scanners.MultiStringScanner([x for x in linux_banners if x is not None])
+        for _, banner in layer.scan(
+            context=context, scanner=mss, progress_callback=progress_callback
+        ):
+            vollog.debug(f"Identified banner: {repr(banner)}")
+
+            isf_path = linux_banners.get(banner, None)
+            if not isf_path:
+                continue
+
+            table_name = context.symbol_space.free_table_name("LinuxAArch64Stacker")
+            table = linux.LinuxKernelIntermedSymbols(
+                context,
+                "temporary." + table_name,
+                name=table_name,
+                isf_url=isf_path,
+            )
+            context.symbol_space.append(table)
+
+            # Check if this is an AArch64 kernel
+            if "swapper_pg_dir" not in table.symbols:
+                continue
+
+            kaslr_shift, aslr_shift = cls.find_aslr(
+                context,
+                table_name,
+                layer_name,
+                progress_callback=progress_callback,
+            )
+
+            # For AArch64, swapper_pg_dir is the page global directory
+            swapper_pg_dir_symbol = table.get_symbol("swapper_pg_dir")
+            swapper_pg_dir_virt = swapper_pg_dir_symbol.address + aslr_shift
+            
+            # Convert virtual to physical for AArch64
+            # Use the virtual_to_physical_address method which handles PAGE_OFFSET
+            pgd_phys = cls.virtual_to_physical_address(swapper_pg_dir_symbol.address) + kaslr_shift
+
+            # Build the new layer
+            new_layer_name = context.layers.free_layer_name("AArch64Layer")
+            config_path = join("AArch64Helper", new_layer_name)
+            context.config[join(config_path, "memory_layer")] = layer_name
+            context.config[join(config_path, "page_map_offset")] = pgd_phys
+            context.config[
+                join(config_path, LinuxSymbolFinder.banner_config_key)
+            ] = str(banner, "latin-1")
+
+            layer = arm.LinuxAArch64(
+                context,
+                config_path=config_path,
+                name=new_layer_name,
+                metadata={"os": "Linux"},
+            )
+            layer.config["kernel_virtual_offset"] = aslr_shift
+
+            if layer:
+                vollog.debug(f"AArch64 DTB was found at: 0x{pgd_phys:0x}")
+                return layer
+
+        vollog.debug("No suitable linux AArch64 banner could be matched")
+        return None
+
+    @classmethod
+    def find_aslr(
+        cls,
+        context: interfaces.context.ContextInterface,
+        symbol_table: str,
+        layer_name: str,
+        progress_callback: constants.ProgressCallback = None,
+    ) -> Tuple[int, int]:
+        """Determines the KASLR and ASLR shifts for AArch64."""
+        init_task_symbol = symbol_table + constants.BANG + "init_task"
+        init_task_json_address = context.symbol_space.get_symbol(
+            init_task_symbol
+        ).address
+        swapper_signature = rb"swapper(\/0|\x00\x00)\x00\x00\x00\x00\x00\x00"
+        module = context.module(symbol_table, layer_name, 0)
+        address_mask = context.symbol_space[symbol_table].config.get(
+            "symbol_mask", None
+        )
+
+        task_symbol = module.get_type("task_struct")
+        comm_child_offset = task_symbol.relative_child_offset("comm")
+
+        for offset in context.layers[layer_name].scan(
+            scanner=scanners.RegExScanner(swapper_signature),
+            context=context,
+            progress_callback=progress_callback,
+        ):
+            init_task_address = offset - comm_child_offset
+            init_task = module.object(
+                object_type="task_struct", offset=init_task_address, absolute=True
+            )
+            if init_task.pid != 0:
+                continue
+            elif (
+                init_task.has_member("state")
+                and init_task.state.cast("unsigned int") != 0
+            ):
+                continue
+
+            # Calculate ASLR shift
+            aslr_shift = (
+                int.from_bytes(
+                    init_task.files.cast("bytes", length=init_task.files.vol.size),
+                    byteorder=init_task.files.vol.data_format.byteorder,
+                )
+                - module.get_symbol("init_files").address
+            )
+            
+            # For AArch64, physical addresses are direct mapped
+            kaslr_shift = init_task_address - cls.virtual_to_physical_address(
+                init_task_json_address
+            )
+            
+            if address_mask:
+                aslr_shift = aslr_shift & address_mask
+
+            if aslr_shift & 0xFFF != 0 or kaslr_shift & 0xFFF != 0:
+                continue
+                
+            vollog.debug(
+                f"Linux AArch64 ASLR shift values determined: physical {kaslr_shift:0x} virtual {aslr_shift:0x}"
+            )
+            return kaslr_shift, aslr_shift
+
+        vollog.debug("Scanners could not determine any ASLR shifts, using 0 for both")
+        return 0, 0
+
+    @staticmethod
+    def virtual_to_physical_address(addr: int) -> int:
+        """Converts a virtual AArch64 Linux address to a physical one."""
+        # AArch64 Linux kernel virtual addresses start at 0xffff800000000000
+        if addr >= 0xFFFF800000000000:
+            return addr - 0xFFFF800000000000
+        return addr
 
 
 class LinuxSymbolFinder(symbol_finder.SymbolFinder):

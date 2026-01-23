@@ -8,6 +8,7 @@ from typing import Any, Callable, Iterable, List, Optional
 
 from volatility3.framework import interfaces, renderers
 from volatility3.framework.configuration import requirements
+from volatility3.framework.constants import architectures
 from volatility3.framework.objects import utility
 from volatility3.framework.renderers import format_hints
 from volatility3.framework.symbols import intermed
@@ -42,7 +43,7 @@ class PsList(interfaces.plugins.PluginInterface, timeliner.TimeLinerInterface):
             requirements.ModuleRequirement(
                 name="kernel",
                 description="Linux kernel",
-                architectures=["Intel32", "Intel64"],
+                architectures=architectures.LINUX_ARCHS,
             ),
             requirements.VersionRequirement(
                 name="elfs", component=elfs.Elfs, version=(2, 0, 0)

@@ -8,6 +8,7 @@ from typing import Callable, Tuple, List, Dict
 from volatility3.framework import interfaces, exceptions, constants, objects, renderers
 from volatility3.framework.renderers import format_hints
 from volatility3.framework.configuration import requirements
+from volatility3.framework.constants import architectures
 from volatility3.framework.interfaces import plugins
 from volatility3.framework.objects import utility
 from volatility3.framework.symbols import linux
@@ -458,7 +459,7 @@ class Sockstat(plugins.PluginInterface):
             requirements.ModuleRequirement(
                 name="kernel",
                 description="Linux kernel",
-                architectures=["Intel32", "Intel64"],
+                architectures=architectures.LINUX_ARCHS,
             ),
             requirements.VersionRequirement(
                 name="SockHandlers", component=SockHandlers, version=(4, 0, 0)

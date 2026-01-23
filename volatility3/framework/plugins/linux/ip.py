@@ -5,6 +5,7 @@
 from typing import List
 from volatility3.framework import interfaces, renderers, constants
 from volatility3.framework.configuration import requirements
+from volatility3.framework.constants import architectures
 from volatility3.framework.interfaces import plugins
 from volatility3.framework.symbols.linux import network
 from volatility3.framework.symbols.linux.extensions import network as net_extensions
@@ -23,7 +24,7 @@ class Addr(plugins.PluginInterface):
             requirements.ModuleRequirement(
                 name="kernel",
                 description="Linux kernel",
-                architectures=["Intel32", "Intel64"],
+                architectures=architectures.LINUX_ARCHS,
             ),
             requirements.VersionRequirement(
                 name="Net", component=network.NetSymbols, version=(1, 0, 0)
@@ -145,7 +146,7 @@ class Link(plugins.PluginInterface):
             requirements.ModuleRequirement(
                 name="kernel",
                 description="Linux kernel",
-                architectures=["Intel32", "Intel64"],
+                architectures=architectures.LINUX_ARCHS,
             ),
             requirements.VersionRequirement(
                 name="Net", component=network.NetSymbols, version=(1, 0, 0)

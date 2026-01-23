@@ -6,8 +6,9 @@ from typing import Iterable, List
 import struct
 from enum import Enum
 
-from volatility3.framework import renderers, interfaces, symbols, constants, exceptions
+from volatility3.framework import interfaces, renderers, constants
 from volatility3.framework.configuration import requirements
+from volatility3.framework.constants import architectures
 from volatility3.framework.layers import scanners
 from volatility3.framework.renderers import format_hints
 from volatility3.plugins.linux import pslist
@@ -36,7 +37,7 @@ class PsScan(interfaces.plugins.PluginInterface):
             requirements.ModuleRequirement(
                 name="kernel",
                 description="Linux kernel",
-                architectures=["Intel32", "Intel64"],
+                architectures=architectures.LINUX_ARCHS,
             ),
             requirements.VersionRequirement(
                 name="pslist", component=pslist.PsList, version=(4, 0, 0)
