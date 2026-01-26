@@ -69,13 +69,11 @@ class LinuxIntelStacker(interfaces.automagic.StackerLayerInterface):
                     progress_callback=progress_callback,
                 )
 
-                # Skip if this is an AArch64 kernel (detected by pt_regs size)
-                # AArch64: 320 bytes (40 regs × 8), x86_64: ~168 bytes
-                if table.has_type("pt_regs"):
-                    pt_regs_size = table.get_type("pt_regs").size
-                    if pt_regs_size >= 300:  # Likely AArch64
-                        vollog.debug(f"Skipping Intel stacker for AArch64 kernel (pt_regs size: {pt_regs_size})")
-                        continue
+                # Skip non-Intel kernels by checking for x86-specific symbols
+                # idt_table (Interrupt Descriptor Table) is x86-only; ARM uses GIC/exception vectors
+                if "idt_table" not in table.symbols:
+                    vollog.debug("Skipping Intel stacker: idt_table symbol not found")
+                    continue
 
                 if "init_top_pgt" in table.symbols:
                     layer_class = intel.LinuxIntel32e
