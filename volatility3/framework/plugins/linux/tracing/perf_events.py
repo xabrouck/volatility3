@@ -5,7 +5,7 @@ import logging
 from typing import List, Tuple, Generator, Optional
 
 from volatility3.framework import renderers, interfaces, constants, exceptions
-from volatility3.framework import interfaces, renderers
+from volatility3.framework.renderers import format_hints
 from volatility3.framework.configuration import requirements
 from volatility3.framework.constants import architectures
 from volatility3.framework.interfaces import plugins

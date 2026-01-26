@@ -5,7 +5,7 @@
 import logging
 from typing import List, Iterable
 
-from volatility3.framework import interfaces, renderers
+from volatility3.framework import interfaces, renderers, constants
 from volatility3.framework.symbols import linux
 from volatility3.framework.renderers import format_hints
 from volatility3.framework.interfaces import plugins

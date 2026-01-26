@@ -273,7 +273,6 @@ class LinuxAArch64Stacker(interfaces.automagic.StackerLayerInterface):
 
             # For AArch64, swapper_pg_dir is the page global directory
             swapper_pg_dir_symbol = table.get_symbol("swapper_pg_dir")
-            swapper_pg_dir_virt = swapper_pg_dir_symbol.address + aslr_shift
 
             # Determine page table levels from symbol table
             # If __pud_alloc exists, PUD is a real level (4-level page tables)

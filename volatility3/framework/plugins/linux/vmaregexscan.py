@@ -6,7 +6,7 @@ import logging
 import re
 from typing import List
 
-from volatility3.framework import interfaces, renderers, exceptions
+from volatility3.framework import interfaces, renderers
 from volatility3.framework.configuration import requirements
 from volatility3.framework.constants import architectures
 from volatility3.framework.interfaces import plugins

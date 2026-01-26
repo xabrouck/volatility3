@@ -6,7 +6,8 @@ from typing import Iterable, List
 import struct
 from enum import Enum
 
-from volatility3.framework import interfaces, renderers, constants
+
+from volatility3.framework import renderers, interfaces, symbols, constants, exceptions
 from volatility3.framework.configuration import requirements
 from volatility3.framework.constants import architectures
 from volatility3.framework.layers import scanners

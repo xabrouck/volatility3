@@ -238,4 +238,3 @@ class AArch64(linear.LinearlyMappedLayer):
 class LinuxAArch64(AArch64):
     """Linux-specific AArch64 layer."""
 
-    pass
