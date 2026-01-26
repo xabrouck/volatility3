@@ -274,7 +274,7 @@ class LinuxAArch64Stacker(interfaces.automagic.StackerLayerInterface):
             # For AArch64, swapper_pg_dir is the page global directory
             swapper_pg_dir_symbol = table.get_symbol("swapper_pg_dir")
             swapper_pg_dir_virt = swapper_pg_dir_symbol.address + aslr_shift
-            
+
             # Determine page table levels from symbol table
             # If __pud_alloc exists, PUD is a real level (4-level page tables)
             # If __pud_alloc is missing, PUD is folded into PGD (3-level page tables)
@@ -282,10 +282,13 @@ class LinuxAArch64Stacker(interfaces.automagic.StackerLayerInterface):
                 page_table_levels = 4
             else:
                 page_table_levels = 3
-            
+
             # Convert virtual to physical for AArch64
             # Use the virtual_to_physical_address method which handles PAGE_OFFSET
-            pgd_phys = cls.virtual_to_physical_address(swapper_pg_dir_symbol.address) + kaslr_shift
+            pgd_phys = (
+                cls.virtual_to_physical_address(swapper_pg_dir_symbol.address)
+                + kaslr_shift
+            )
 
             # Build the new layer
             new_layer_name = context.layers.free_layer_name("AArch64Layer")
@@ -293,9 +296,9 @@ class LinuxAArch64Stacker(interfaces.automagic.StackerLayerInterface):
             context.config[join(config_path, "memory_layer")] = layer_name
             context.config[join(config_path, "page_map_offset")] = pgd_phys
             context.config[join(config_path, "page_table_levels")] = page_table_levels
-            context.config[
-                join(config_path, LinuxSymbolFinder.banner_config_key)
-            ] = str(banner, "latin-1")
+            context.config[join(config_path, LinuxSymbolFinder.banner_config_key)] = (
+                str(banner, "latin-1")
+            )
 
             layer = arm.LinuxAArch64(
                 context,
@@ -359,18 +362,18 @@ class LinuxAArch64Stacker(interfaces.automagic.StackerLayerInterface):
                 )
                 - module.get_symbol("init_files").address
             )
-            
+
             # For AArch64, physical addresses are direct mapped
             kaslr_shift = init_task_address - cls.virtual_to_physical_address(
                 init_task_json_address
             )
-            
+
             if address_mask:
                 aslr_shift = aslr_shift & address_mask
 
             if aslr_shift & 0xFFF != 0 or kaslr_shift & 0xFFF != 0:
                 continue
-                
+
             vollog.debug(
                 f"Linux AArch64 ASLR shift values determined: physical {kaslr_shift:0x} virtual {aslr_shift:0x}"
             )
@@ -382,7 +385,7 @@ class LinuxAArch64Stacker(interfaces.automagic.StackerLayerInterface):
     @staticmethod
     def virtual_to_physical_address(addr: int) -> int:
         """Converts a virtual AArch64 Linux address to a physical one.
-        
+
         AArch64 Linux kernel virtual addresses in the linear map region
         have the physical address in the lower bits. We just mask off
         the high bits to get the physical address.
