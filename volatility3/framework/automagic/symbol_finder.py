@@ -138,9 +138,8 @@ class SymbolFinder(interfaces.automagic.AutomagicInterface):
             ]  # type: Iterable[Any]
         else:
             # Swap to the physical layer for scanning
-            # Only traverse down a layer if it's an intel layer
-            # TODO: Fix this so it works for layers other than just Intel
-            if isinstance(layer, layers.intel.Intel):
+            # Traverse down a layer if it's a translation layer (Intel or AArch64)
+            if isinstance(layer, (layers.intel.Intel, layers.arm.AArch64)):
                 layer = context.layers[layer.config["memory_layer"]]
             banner_list = layer.scan(
                 context=context, scanner=mss, progress_callback=progress_callback

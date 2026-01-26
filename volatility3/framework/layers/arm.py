@@ -11,10 +11,10 @@ from volatility3.framework.layers import linear
 
 
 class AArch64(linear.LinearlyMappedLayer):
-    """AArch64 translation layer using 4-level page table walking.
+    """AArch64 translation layer supporting both 3-level and 4-level page tables.
     
     Translates virtual addresses to physical using the page global directory.
-    Supports 4KB pages with 48-bit virtual addresses.
+    Supports 4KB pages with either 39-bit VA (3-level) or 48-bit VA (4-level).
     """
     
     _direct_metadata = {
@@ -37,6 +37,7 @@ class AArch64(linear.LinearlyMappedLayer):
             requirements.IntRequirement(name="page_map_offset", optional=False),
             requirements.IntRequirement(name="kernel_virtual_offset", optional=True),
             requirements.StringRequirement(name="kernel_banner", optional=True),
+            requirements.IntRequirement(name="page_table_levels", optional=True),
         ]
     
     def __init__(self, context, config_path, name, metadata=None):
@@ -44,6 +45,7 @@ class AArch64(linear.LinearlyMappedLayer):
         self._base_layer = self.config["memory_layer"]
         self._pgd_addr = self.config["page_map_offset"]
         self._translation_cache = {}
+        self._page_table_levels = self.config.get("page_table_levels", 4)
     
     @property
     def dependencies(self) -> List[str]:
@@ -76,18 +78,74 @@ class AArch64(linear.LinearlyMappedLayer):
     def _translate_entry(self, vaddr: int) -> Tuple[int, int, int]:
         """Translate virtual address and return (physical_addr, page_size, pte_entry).
         
-        For 4KB pages with 48-bit VA:
-        - Bits [47:39] = Level 0 index (PGD)
-        - Bits [38:30] = Level 1 index (PUD)
-        - Bits [29:21] = Level 2 index (PMD)
-        - Bits [20:12] = Level 3 index (PTE)
-        - Bits [11:0]  = Page offset
+        Supports both 3-level (39-bit VA) and 4-level (48-bit VA) page tables.
         """
         # Check cache first
         page_vaddr = vaddr & ~0xFFF
         if page_vaddr in self._translation_cache:
             page_phys, page_size, pte_entry = self._translation_cache[page_vaddr]
             return page_phys + (vaddr & 0xFFF), page_size, pte_entry
+        
+        if self._page_table_levels == 3:
+            return self._translate_3level(vaddr)
+        else:
+            return self._translate_4level(vaddr)
+    
+    def _translate_3level(self, vaddr: int) -> Tuple[int, int, int]:
+        """Translate using 3-level page table (39-bit VA)."""
+        page_vaddr = vaddr & ~0xFFF
+        
+        # Extract indices from virtual address (lower 39 bits)
+        va_bits = vaddr & 0x7FFFFFFFFF
+        pgd_idx = (va_bits >> 30) & 0x1FF
+        pmd_idx = (va_bits >> 21) & 0x1FF
+        pte_idx = (va_bits >> 12) & 0x1FF
+        
+        # Level 0: PGD (points to PMD)
+        pgd_entry_addr = self._pgd_addr + pgd_idx * 8
+        pgd_entry = self._read_phys_u64(pgd_entry_addr)
+        if not (pgd_entry & self._PTE_VALID):
+            raise exceptions.InvalidAddressException(
+                self.name, vaddr, "Invalid PGD entry"
+            )
+        
+        # Check for 1GB block at PGD level
+        if not (pgd_entry & self._PTE_TABLE):
+            block_addr = pgd_entry & 0xFFFFC0000000
+            return block_addr + (va_bits & 0x3FFFFFFF), 1 << 30, pgd_entry
+        
+        # Level 1: PMD
+        pmd_addr = pgd_entry & self._PTE_ADDR_MASK
+        pmd_entry = self._read_phys_u64(pmd_addr + pmd_idx * 8)
+        if not (pmd_entry & self._PTE_VALID):
+            raise exceptions.InvalidAddressException(
+                self.name, vaddr, "Invalid PMD entry"
+            )
+        
+        # Check for 2MB block
+        if not (pmd_entry & self._PTE_TABLE):
+            block_addr = pmd_entry & 0xFFFFFFE00000
+            return block_addr + (va_bits & 0x1FFFFF), 1 << 21, pmd_entry
+        
+        # Level 2: PTE
+        pte_addr = pmd_entry & self._PTE_ADDR_MASK
+        pte_entry = self._read_phys_u64(pte_addr + pte_idx * 8)
+        if not (pte_entry & self._PTE_VALID):
+            raise exceptions.InvalidAddressException(
+                self.name, vaddr, "Invalid PTE entry"
+            )
+        
+        page_phys = pte_entry & self._PTE_ADDR_MASK
+        page_size = 1 << 12  # 4KB
+        
+        # Cache the translation
+        self._translation_cache[page_vaddr] = (page_phys, page_size, pte_entry)
+        
+        return page_phys + (vaddr & 0xFFF), page_size, pte_entry
+    
+    def _translate_4level(self, vaddr: int) -> Tuple[int, int, int]:
+        """Translate using 4-level page table (48-bit VA)."""
+        page_vaddr = vaddr & ~0xFFF
         
         # Extract indices from virtual address (lower 48 bits)
         va_bits = vaddr & 0xFFFFFFFFFFFF
@@ -171,7 +229,6 @@ class AArch64(linear.LinearlyMappedLayer):
         except exceptions.InvalidAddressException:
             if not ignore_errors:
                 raise
-
 
 class LinuxAArch64(AArch64):
     """Linux-specific AArch64 layer."""

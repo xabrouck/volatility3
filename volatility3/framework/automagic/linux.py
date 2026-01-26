@@ -30,9 +30,8 @@ class LinuxIntelStacker(interfaces.automagic.StackerLayerInterface):
         layer = context.layers[layer_name]
         join = interfaces.configuration.path_join
 
-        # Never stack on top of an intel layer
-        # FIXME: Find a way to improve this check
-        if isinstance(layer, intel.Intel):
+        # Never stack on top of a translation layer (Intel or AArch64)
+        if isinstance(layer, (intel.Intel, arm.AArch64)):
             return None
 
         linux_banners = symbol_cache.load_cache_manager().get_identifier_dictionary(
@@ -278,6 +277,14 @@ class LinuxAArch64Stacker(interfaces.automagic.StackerLayerInterface):
             swapper_pg_dir_symbol = table.get_symbol("swapper_pg_dir")
             swapper_pg_dir_virt = swapper_pg_dir_symbol.address + aslr_shift
             
+            # Determine page table levels from symbol table
+            # If __pud_alloc exists, PUD is a real level (4-level page tables)
+            # If __pud_alloc is missing, PUD is folded into PGD (3-level page tables)
+            if "__pud_alloc" in table.symbols:
+                page_table_levels = 4
+            else:
+                page_table_levels = 3
+            
             # Convert virtual to physical for AArch64
             # Use the virtual_to_physical_address method which handles PAGE_OFFSET
             pgd_phys = cls.virtual_to_physical_address(swapper_pg_dir_symbol.address) + kaslr_shift
@@ -287,6 +294,7 @@ class LinuxAArch64Stacker(interfaces.automagic.StackerLayerInterface):
             config_path = join("AArch64Helper", new_layer_name)
             context.config[join(config_path, "memory_layer")] = layer_name
             context.config[join(config_path, "page_map_offset")] = pgd_phys
+            context.config[join(config_path, "page_table_levels")] = page_table_levels
             context.config[
                 join(config_path, LinuxSymbolFinder.banner_config_key)
             ] = str(banner, "latin-1")
@@ -375,11 +383,14 @@ class LinuxAArch64Stacker(interfaces.automagic.StackerLayerInterface):
 
     @staticmethod
     def virtual_to_physical_address(addr: int) -> int:
-        """Converts a virtual AArch64 Linux address to a physical one."""
-        # AArch64 Linux kernel virtual addresses start at 0xffff800000000000
-        if addr >= 0xFFFF800000000000:
-            return addr - 0xFFFF800000000000
-        return addr
+        """Converts a virtual AArch64 Linux address to a physical one.
+        
+        AArch64 Linux kernel virtual addresses in the linear map region
+        have the physical address in the lower bits. We just mask off
+        the high bits to get the physical address.
+        """
+        # Mask to get lower 48 bits (covers both 39-bit and 48-bit VA)
+        return addr & 0x0000FFFFFFFFFFFF
 
 
 class LinuxSymbolFinder(symbol_finder.SymbolFinder):
@@ -432,9 +443,8 @@ class LinuxIntelVMCOREINFOStacker(interfaces.automagic.StackerLayerInterface):
         # Bail out by default unless we can stack properly
         layer = context.layers[layer_name]
 
-        # Never stack on top of an intel layer
-        # FIXME: Find a way to improve this check
-        if isinstance(layer, intel.Intel):
+        # Never stack on top of a translation layer (Intel or AArch64)
+        if isinstance(layer, (intel.Intel, arm.AArch64)):
             return None
 
         linux_banners = symbol_cache.load_cache_manager().get_identifier_dictionary(
