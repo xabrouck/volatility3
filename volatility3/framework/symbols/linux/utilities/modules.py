@@ -642,7 +642,6 @@ class Modules(interfaces.configuration.VersionableInterface):
             return None
 
         kernel = context.modules[vmlinux_name]
-        kernel_layer = context.layers[kernel.layer_name]
 
         # Sanity check: param_func should be a valid kernel virtual address
         # On 64-bit systems, kernel addresses have high bits set (e.g., 0xffff... on arm64/x86_64)
