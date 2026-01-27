@@ -16,7 +16,6 @@ from volatility3.plugins.linux import lsof
 from volatility3.plugins.linux import pslist
 from volatility3.framework.symbols.linux import network
 
-
 vollog = logging.getLogger(__name__)
 
 
