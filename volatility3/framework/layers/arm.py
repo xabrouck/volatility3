@@ -22,6 +22,9 @@ class AArch64(linear.LinearlyMappedLayer):
         "mapped": True,
     }
 
+    # AArch64 is little-endian and uses 64-bit entries
+    _entry_format = "<Q"
+
     # Page table constants for 4KB pages
     _PAGE_SHIFT = 12
     _PAGE_SIZE = 1 << _PAGE_SHIFT  # 4096
@@ -233,6 +236,23 @@ class AArch64(linear.LinearlyMappedLayer):
         except exceptions.InvalidAddressException:
             if not ignore_errors:
                 raise
+
+    def canonicalize(self, addr: int) -> int:
+        """Canonicalizes an address by sign-extending from the VA width.
+
+        AArch64 kernel addresses have upper bits set (TTBR1 space).
+        For 48-bit VA, addresses >= 0xFFFF000000000000 are kernel space.
+        For 39-bit VA, addresses >= 0xFFFFFF8000000000 are kernel space.
+        """
+        if self._page_table_levels == 3:
+            # 39-bit VA: sign extend from bit 38
+            if addr & (1 << 38):
+                return addr | 0xFFFFFF8000000000
+        else:
+            # 48-bit VA: sign extend from bit 47
+            if addr & (1 << 47):
+                return addr | 0xFFFF000000000000
+        return addr
 
 
 class LinuxAArch64(AArch64):
