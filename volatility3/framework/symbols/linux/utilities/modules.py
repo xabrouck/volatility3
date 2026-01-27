@@ -642,6 +642,17 @@ class Modules(interfaces.configuration.VersionableInterface):
             return None
 
         kernel = context.modules[vmlinux_name]
+        kernel_layer = context.layers[kernel.layer_name]
+
+        # Sanity check: param_func should be a valid kernel virtual address
+        # On 64-bit systems, kernel addresses have high bits set (e.g., 0xffff... on arm64/x86_64)
+        # Addresses below 0xffff000000000000 are clearly invalid for kernel code
+        if symbols.symbol_table_is_64bit(context, kernel.symbol_table_name):
+            if param_func < 0xFFFF000000000000:
+                vollog.debug(
+                    f"Skipping parameter with invalid handler address {param_func:#x} for module {module.vol.offset:#x}"
+                )
+                return None
 
         # For arrays, recursively get the value of each member as the type can be different
         if param_func == getters["param_array_get"]:
