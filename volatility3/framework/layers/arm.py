@@ -22,8 +22,9 @@ class AArch64(linear.LinearlyMappedLayer):
         "mapped": True,
     }
 
-    # AArch64 is little-endian and uses 64-bit entries
+    # AArch64 is little-endian and uses 64-bit entries/registers
     _entry_format = "<Q"
+    _bits_per_register = 64
 
     # Page table constants for 4KB pages
     _PAGE_SHIFT = 12
@@ -73,6 +74,10 @@ class AArch64(linear.LinearlyMappedLayer):
     @property
     def page_size(self) -> int:
         return self._PAGE_SIZE
+
+    @property
+    def bits_per_register(self) -> int:
+        return self._bits_per_register
 
     def _read_phys_u64(self, phys_addr: int) -> int:
         """Read a 64-bit value from physical memory."""
