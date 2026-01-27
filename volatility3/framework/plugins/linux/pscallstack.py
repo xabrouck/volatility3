@@ -109,13 +109,25 @@ class PsCallStack(plugins.PluginInterface):
         task_top_of_stack = task_base_of_stack + thread_size
 
         byte_order = task.files.vol.data_format.byteorder
-        rsp_start = task.thread.sp
-        if not (task_base_of_stack <= rsp_start < task_top_of_stack):
+
+        # Get stack pointer based on architecture
+        layer_arch = vmlinux_layer.metadata.get("architecture", None)
+        if layer_arch == "AArch64":
+            # AArch64: sp is in thread.cpu_context.sp
+            sp_start = task.thread.cpu_context.sp
+        elif layer_arch in ("Intel32", "Intel64"):
+            # Intel: sp is directly in thread.sp
+            sp_start = task.thread.sp
+        else:
             raise exceptions.VolatilityException(
-                f"Invalid stack pointer {rsp_start:#x} for task {task.pid}"
+                f"Unsupported architecture: {layer_arch}"
+            )
+        if not (task_base_of_stack <= sp_start < task_top_of_stack):
+            raise exceptions.VolatilityException(
+                f"Invalid stack pointer {sp_start:#x} for task {task.pid}"
             )
 
-        current_sp = rsp_start
+        current_sp = sp_start
         idx = 0
         while current_sp < task_top_of_stack:
             try:
