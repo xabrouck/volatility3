@@ -235,12 +235,46 @@ class AArch64(linear.LinearlyMappedLayer):
             return False
 
     def mapping(self, offset: int, length: int, ignore_errors: bool = False):
-        try:
-            physical, page_size, layer = self._translate(offset)
-            yield offset, length, physical, length, layer
-        except exceptions.InvalidAddressException:
-            if not ignore_errors:
-                raise
+        """Returns a sorted iterable of (offset, sublength, mapped_offset, mapped_length, layer)
+        mappings.
+
+        This allows translation layers to provide maps of contiguous regions in one layer.
+        """
+        if length == 0:
+            try:
+                mapped_offset, _, layer_name = self._translate(offset)
+                if not self._context.layers[layer_name].is_valid(mapped_offset):
+                    raise exceptions.InvalidAddressException(
+                        layer_name=layer_name, invalid_address=mapped_offset
+                    )
+            except exceptions.InvalidAddressException:
+                if not ignore_errors:
+                    raise
+                return None
+            yield offset, length, mapped_offset, length, layer_name
+            return None
+
+        while length > 0:
+            try:
+                chunk_offset, page_size, layer_name = self._translate(offset)
+                chunk_size = min(page_size - (offset % page_size), length)
+                if not self._context.layers[layer_name].is_valid(
+                    chunk_offset, chunk_size
+                ):
+                    raise exceptions.InvalidAddressException(
+                        layer_name=layer_name, invalid_address=chunk_offset
+                    )
+            except exceptions.InvalidAddressException:
+                if not ignore_errors:
+                    raise
+                # Skip to next page boundary
+                skip_size = self._PAGE_SIZE - (offset % self._PAGE_SIZE)
+                length -= skip_size
+                offset += skip_size
+            else:
+                yield offset, chunk_size, chunk_offset, chunk_size, layer_name
+                length -= chunk_size
+                offset += chunk_size
 
     def canonicalize(self, addr: int) -> int:
         """Canonicalizes an address by sign-extending from the VA width.

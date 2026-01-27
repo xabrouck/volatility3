@@ -30,12 +30,20 @@ class VMCoreInfo(plugins.PluginInterface):
 
     def _generator(self):
         layer_name = self.config["primary"]
+        layer = self.context.layers[layer_name]
+
+        # If this is a translation layer, scan the underlying physical layer instead
+        if hasattr(layer, "dependencies") and layer.dependencies:
+            scan_layer_name = layer.dependencies[0]
+        else:
+            scan_layer_name = layer_name
+
         for (
             vmcoreinfo_offset,
             vmcoreinfo,
         ) in linux.VMCoreInfo.search_vmcoreinfo_elf_note(
             context=self.context,
-            layer_name=layer_name,
+            layer_name=scan_layer_name,
         ):
             for key, value in vmcoreinfo.items():
                 if key.startswith("SYMBOL(") or key == "KERNELOFFSET":
