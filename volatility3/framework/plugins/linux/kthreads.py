@@ -53,17 +53,21 @@ class Kthreads(plugins.PluginInterface):
         vmlinux = self.context.modules[self.config["kernel"]]
 
         kthread_type = vmlinux.get_type("kthread")
+        has_threadfn = kthread_type.has_member("threadfn")
 
-        if not kthread_type.has_member("threadfn"):
-            raise exceptions.VolatilityException(
-                "Unsupported kthread implementation. This plugin only works with kernels >= 5.8"
+        if not has_threadfn:
+            vollog.warning(
+                "Kernel < 5.8 detected: threadfn not available in struct kthread. "
+                "Handler addresses will not be shown."
             )
 
-        known_modules = linux_utilities_modules.Modules.run_modules_scanners(
-            context=self.context,
-            kernel_module_name=self.config["kernel"],
-            caller_wanted_gatherers=linux_utilities_modules.ModuleGatherers.all_gatherers_identifier,
-        )
+        known_modules = None
+        if has_threadfn:
+            known_modules = linux_utilities_modules.Modules.run_modules_scanners(
+                context=self.context,
+                kernel_module_name=self.config["kernel"],
+                caller_wanted_gatherers=linux_utilities_modules.ModuleGatherers.all_gatherers_identifier,
+            )
 
         for task in pslist.PsList.list_tasks(
             self.context, vmlinux.name, include_threads=True
@@ -71,52 +75,56 @@ class Kthreads(plugins.PluginInterface):
             if not task.is_kernel_thread:
                 continue
 
-            if task.has_member("worker_private"):
-                # kernels >= 5.17 e32cf5dfbe227b355776948b2c9b5691b84d1cbd
-                kthread_base_pointer = task.worker_private
-            else:
-                # 5.8 <= kernels < 5.17 in 52782c92ac85c4e393eb4a903a62e6c24afa633f threadfn
-                # was added to struct kthread. task.set_child_tid is safe on those versions.
-                kthread_base_pointer = task.set_child_tid
-
-            if not kthread_base_pointer.is_readable():
-                continue
-
-            kthread = kthread_base_pointer.dereference().cast("kthread")
-            threadfn = kthread.threadfn
-            if not (threadfn and threadfn.is_readable()):
-                continue
-
             thread_name = utility.array_to_string(task.comm)
+            threadfn = None
+            module_name = renderers.NotAvailableValue()
+            symbol_name = renderers.NotAvailableValue()
 
-            # kernels >= 5.17 in d6986ce24fc00b0638bd29efe8fb7ba7619ed2aa full_name was added to kthread
-            if kthread.has_member("full_name"):
-                try:
-                    thread_name = utility.pointer_to_string(
-                        kthread.full_name, count=255
-                    )
-                except exceptions.InvalidAddressException:
-                    vollog.debug(
-                        f"full_name pointer for thread at {kthread.vol.offset:#x} is paged out."
-                    )
+            if has_threadfn:
+                if task.has_member("worker_private"):
+                    # kernels >= 5.17 e32cf5dfbe227b355776948b2c9b5691b84d1cbd
+                    kthread_base_pointer = task.worker_private
+                else:
+                    # 5.8 <= kernels < 5.17 in 52782c92ac85c4e393eb4a903a62e6c24afa633f threadfn
+                    # was added to struct kthread. task.set_child_tid is safe on those versions.
+                    kthread_base_pointer = task.set_child_tid
 
-            module_info, symbol_name = (
-                linux_utilities_modules.Modules.module_lookup_by_address(
-                    self.context, vmlinux.name, known_modules, threadfn
-                )
-            )
+                if kthread_base_pointer.is_readable():
+                    kthread = kthread_base_pointer.dereference().cast("kthread")
+                    threadfn = kthread.threadfn
 
-            if module_info:
-                module_name = module_info.name
-            else:
-                module_name = renderers.NotAvailableValue()
+                    # kernels >= 5.17 in d6986ce24fc00b0638bd29efe8fb7ba7619ed2aa full_name was added to kthread
+                    if kthread.has_member("full_name"):
+                        try:
+                            thread_name = utility.pointer_to_string(
+                                kthread.full_name, count=255
+                            )
+                        except exceptions.InvalidAddressException:
+                            vollog.debug(
+                                f"full_name pointer for thread at {kthread.vol.offset:#x} is paged out."
+                            )
+
+                    if threadfn and threadfn.is_readable():
+                        module_info, sym_name = (
+                            linux_utilities_modules.Modules.module_lookup_by_address(
+                                self.context, vmlinux.name, known_modules, threadfn
+                            )
+                        )
+                        if module_info:
+                            module_name = module_info.name
+                        if sym_name:
+                            symbol_name = sym_name
 
             fields = [
                 task.pid,
                 thread_name,
-                format_hints.Hex(threadfn),
+                (
+                    format_hints.Hex(threadfn)
+                    if threadfn
+                    else renderers.NotAvailableValue()
+                ),
                 module_name,
-                symbol_name or renderers.NotAvailableValue(),
+                symbol_name,
             ]
             yield 0, fields
 
