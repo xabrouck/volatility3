@@ -2374,12 +2374,11 @@ class kernel_cap_t(kernel_cap_struct):
         if self.has_member("val"):
             # In kernels >= 6.3 kernel_cap_t::val is a u64
             cap_value = self.val
+            return cap_value & self.get_kernel_cap_full()
         else:
-            raise exceptions.VolatilityException(
-                "Unsupported kernel capabilities implementation"
-            )
-
-        return cap_value & self.get_kernel_cap_full()
+            # For older kernels, kernel_cap_t is a typedef to kernel_cap_struct
+            # which uses the 'cap' member - delegate to parent class
+            return super().get_capabilities()
 
 
 class Timespec64Abstract(abc.ABC):
