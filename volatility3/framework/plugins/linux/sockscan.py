@@ -254,6 +254,13 @@ class Sockscan(plugins.PluginInterface):
             socket_alloc = linux.LinuxUtilities.container_of(
                 d_inode, "socket_alloc", "vfs_inode", vmlinux
             )
+            if not socket_alloc:
+                vollog.log(
+                    constants.LOGLEVEL_VVVV,
+                    f"Skipping file at {hex(needle_addr)} as unable to create socket_alloc from inode",
+                )
+                return None
+
             socket = socket_alloc.socket
             if not (socket and socket.sk):
                 vollog.log(
