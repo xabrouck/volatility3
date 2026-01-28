@@ -59,16 +59,22 @@ class PsScan(interfaces.plugins.PluginInterface):
         for task in self.scan_tasks(
             self.context, vmlinux_module_name, vmlinux.layer_name
         ):
-            task_fields = pslist.PsList.get_task_fields(task)
-            exit_state = DescExitStateEnum(task.exit_state).name
-            fields = (
-                format_hints.Hex(task_fields.offset),
-                task_fields.user_pid,
-                task_fields.user_tid,
-                task_fields.user_ppid,
-                task_fields.name,
-                exit_state,
-            )
+            try:
+                task_fields = pslist.PsList.get_task_fields(task)
+                exit_state = DescExitStateEnum(task.exit_state).name
+                fields = (
+                    format_hints.Hex(task_fields.offset),
+                    task_fields.user_pid,
+                    task_fields.user_tid,
+                    task_fields.user_ppid,
+                    task_fields.name,
+                    exit_state,
+                )
+            except exceptions.InvalidAddressException as e:
+                vollog.debug(
+                    f"Skipping task_struct at {hex(task.vol.offset)} due to invalid memory access: {e}"
+                )
+                continue
 
             yield (0, fields)
 
