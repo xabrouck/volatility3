@@ -750,11 +750,17 @@ class task_struct(generic.GenericIntelProcess):
         """Returns the boot time in a Timespec64Concrete object."""
 
         vmlinux = linux.LinuxUtilities.get_module_from_volobj_type(self._context, self)
-        if vmlinux.has_symbol("timekeeper_data"):
+        if vmlinux.has_symbol("timekeeper_data") and vmlinux.has_type("tk_data"):
             # kernels >= 6.12 | timekeeper_data | 4e4478f2e1b5f5a8e9e9e9e9e9e9e9e9e9e9e9e9
             # timekeeper_data is an array of tk_data structs
-            timekeeper_data = vmlinux.object_from_symbol("timekeeper_data")
-            timekeeper = timekeeper_data[0].timekeeper
+            # Some profiles have the symbol typed as void, so we cast it explicitly
+            timekeeper_data_addr = vmlinux.get_symbol("timekeeper_data").address
+            tk_data = vmlinux.object(
+                object_type="tk_data",
+                offset=timekeeper_data_addr + vmlinux.offset,
+                absolute=True,
+            )
+            timekeeper = tk_data.timekeeper
             if not timekeeper.offs_real.has_member("tv64"):
                 boottime_nsec = timekeeper.offs_real - timekeeper.offs_boot
             else:
