@@ -714,6 +714,12 @@ class Modules(interfaces.configuration.VersionableInterface):
                     f"Skipping {int_handlers[param_func]} parameter with invalid address for module {module.vol.offset:#x}"
                 )
                 return None
+            except exceptions.SymbolError:
+                # Some profiles (e.g., Android) use DWARF-style base type names instead of C-style names
+                vollog.debug(
+                    f"Type {int_handlers[param_func]} not found in symbol table for module {module.vol.offset:#x}"
+                )
+                return None
 
             if param_func == getters["param_get_bool"]:
                 if int_value == 0:
