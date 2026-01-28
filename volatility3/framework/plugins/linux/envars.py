@@ -5,7 +5,7 @@
 import logging
 from typing import Iterable, Tuple
 
-from volatility3.framework import interfaces, renderers
+from volatility3.framework import exceptions, interfaces, renderers
 from volatility3.framework.configuration import requirements
 from volatility3.framework.constants import architectures
 from volatility3.framework.interfaces import plugins
@@ -121,8 +121,17 @@ class Envars(plugins.PluginInterface):
             task_name = utility.array_to_string(task.comm)
             task_ppid = task.get_parent_pid()
 
-            for env_key, env_value in self.get_task_env_variables(self.context, task):
-                yield (0, (task_pid, task_ppid, task_name, env_key, env_value))
+            try:
+                env_vars = self.get_task_env_variables(self.context, task)
+                if env_vars is None:
+                    continue
+                for env_key, env_value in env_vars:
+                    yield (0, (task_pid, task_ppid, task_name, env_key, env_value))
+            except exceptions.InvalidAddressException as e:
+                vollog.debug(
+                    f"Skipping task {task_pid} {task_name} due to invalid memory access: {e}"
+                )
+                continue
 
     def run(self):
         filter_func = pslist.PsList.create_pid_filter(self.config.get("pid", None))
