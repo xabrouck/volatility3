@@ -3144,16 +3144,22 @@ class kernel_symbol(objects.StructType):
         if self.has_member("name_offset"):
             # kernel >= 4.19 and CONFIG_HAVE_ARCH_PREL32_RELOCATIONS=y
             # See 7290d58095712a89f845e1bca05334796dd49ed2
-            name_offset = self._offset_to_ptr(self.name_offset)
+            name_addr = self._offset_to_ptr(self.name_offset)
+            return utility.address_to_string(
+                self._context,
+                self.vol.layer_name,
+                name_addr,
+                linux_constants.KSYM_NAME_LEN,
+                errors="ignore",
+            )
         elif self.has_member("name"):
             # kernel < 4.19 or CONFIG_HAVE_ARCH_PREL32_RELOCATIONS=n
-            name_offset = self.member("name")
+            name_ptr = self.member("name")
+            return utility.pointer_to_string(
+                name_ptr, linux_constants.KSYM_NAME_LEN, errors="ignore"
+            )
         else:
             raise AttributeError("Unsupported kernel_symbol type implementation")
-
-        return utility.pointer_to_string(
-            name_offset, linux_constants.KSYM_NAME_LEN, errors="ignore"
-        )
 
     def get_name(self) -> Optional[str]:
         try:
