@@ -264,13 +264,6 @@ class LinuxAArch64Stacker(interfaces.automagic.StackerLayerInterface):
             if "swapper_pg_dir" not in table.symbols:
                 continue
 
-            kaslr_shift, aslr_shift = cls.find_aslr(
-                context,
-                table_name,
-                layer_name,
-                progress_callback=progress_callback,
-            )
-
             # For AArch64, swapper_pg_dir is the page global directory
             swapper_pg_dir_symbol = table.get_symbol("swapper_pg_dir")
 
@@ -282,10 +275,41 @@ class LinuxAArch64Stacker(interfaces.automagic.StackerLayerInterface):
             else:
                 page_table_levels = 3
 
+            # Detect page size from kernel configuration BEFORE calculating ASLR
+            # 16KB pages use different VA bits and page table structure
+            # Key insight: For 16KB pages with 47-bit VA, we have 3-level page tables
+            # but the linear map starts at 0xFFFFC00000000000 (not 0xFFFF800000000000)
+            # For 4KB pages with 39-bit VA, we also have 3-level but linear map at 0xFFFFFF8000000000
+            # For 4KB pages with 48-bit VA, we have 4-level with linear map at 0xFFFF000000000000
+            swapper_vaddr = swapper_pg_dir_symbol.address
+            if page_table_levels == 3:
+                # 3-level can be either 4KB/39-bit or 16KB/47-bit
+                # 16KB/47-bit: linear map at 0xFFFFC00000000000
+                # 4KB/39-bit: linear map at 0xFFFFFF8000000000
+                if swapper_vaddr >= 0xFFFFC00000000000 and swapper_vaddr < 0xFFFFFF8000000000:
+                    page_size_kb = 16
+                    vollog.debug("Detected 16KB page size (47-bit VA, 3-level)")
+                else:
+                    page_size_kb = 4
+                    vollog.debug("Detected 4KB page size (39-bit VA, 3-level)")
+            else:
+                # 4-level page tables - currently only 4KB/48-bit supported
+                page_size_kb = 4
+                vollog.debug("Detected 4KB page size (48-bit VA, 4-level)")
+
+            # Now calculate ASLR with the correct page size
+            kaslr_shift, aslr_shift = cls.find_aslr(
+                context,
+                table_name,
+                layer_name,
+                page_size_kb,
+                progress_callback=progress_callback,
+            )
+
             # Convert virtual to physical for AArch64
             # Use the virtual_to_physical_address method which handles PAGE_OFFSET
             pgd_phys = (
-                cls.virtual_to_physical_address(swapper_pg_dir_symbol.address)
+                cls.virtual_to_physical_address(swapper_pg_dir_symbol.address, page_size_kb)
                 + kaslr_shift
             )
 
@@ -295,6 +319,7 @@ class LinuxAArch64Stacker(interfaces.automagic.StackerLayerInterface):
             context.config[join(config_path, "memory_layer")] = layer_name
             context.config[join(config_path, "page_map_offset")] = pgd_phys
             context.config[join(config_path, "page_table_levels")] = page_table_levels
+            context.config[join(config_path, "page_size_kb")] = page_size_kb
             context.config[join(config_path, LinuxSymbolFinder.banner_config_key)] = (
                 str(banner, "latin-1")
             )
@@ -320,6 +345,7 @@ class LinuxAArch64Stacker(interfaces.automagic.StackerLayerInterface):
         context: interfaces.context.ContextInterface,
         symbol_table: str,
         layer_name: str,
+        page_size_kb: int = 4,
         progress_callback: constants.ProgressCallback = None,
     ) -> Tuple[int, int]:
         """Determines the KASLR and ASLR shifts for AArch64."""
@@ -363,8 +389,9 @@ class LinuxAArch64Stacker(interfaces.automagic.StackerLayerInterface):
             )
 
             # For AArch64, physical addresses are direct mapped
+            # Use the correct page size for virtual to physical conversion
             kaslr_shift = init_task_address - cls.virtual_to_physical_address(
-                init_task_json_address
+                init_task_json_address, page_size_kb
             )
 
             if address_mask:
@@ -382,15 +409,26 @@ class LinuxAArch64Stacker(interfaces.automagic.StackerLayerInterface):
         return 0, 0
 
     @staticmethod
-    def virtual_to_physical_address(addr: int) -> int:
+    def virtual_to_physical_address(addr: int, page_size_kb: int = 4) -> int:
         """Converts a virtual AArch64 Linux address to a physical one.
 
         AArch64 Linux kernel virtual addresses in the linear map region
-        have the physical address in the lower bits. We just mask off
-        the high bits to get the physical address.
+        have the physical address in the lower bits. We subtract the
+        PAGE_OFFSET to get the physical address.
+
+        For 16KB pages with 47-bit VA, PAGE_OFFSET is 0xFFFFC00000000000
+        For 4KB pages with 48-bit VA, PAGE_OFFSET is 0xFFFF000000000000
+        For 4KB pages with 39-bit VA, PAGE_OFFSET is 0xFFFFFF8000000000
         """
-        # Mask to get lower 48 bits (covers both 39-bit and 48-bit VA)
-        return addr & 0x0000FFFFFFFFFFFF
+        if page_size_kb == 16:
+            # 16KB pages, 47-bit VA: PAGE_OFFSET = 0xFFFFC00000000000
+            return addr - 0xFFFFC00000000000
+        elif addr >= 0xFFFFFF8000000000:
+            # 4KB pages, 39-bit VA: PAGE_OFFSET = 0xFFFFFF8000000000
+            return addr - 0xFFFFFF8000000000
+        else:
+            # 4KB pages, 48-bit VA: PAGE_OFFSET = 0xFFFF000000000000
+            return addr - 0xFFFF000000000000
 
 
 class LinuxSymbolFinder(symbol_finder.SymbolFinder):
