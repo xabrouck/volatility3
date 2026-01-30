@@ -146,30 +146,55 @@ class MIPS64(linear.LinearlyMappedLayer):
 
         MIPS64 Linux uses 3-level page tables: PGD -> PMD -> PTE
         For kernel addresses, most are in directly mapped segments (CKSEG0/CKSEG1/XKPHYS).
+        User-space addresses require page table translation.
         """
         # Check for directly mapped addresses first (most common case for kernel)
         if self._is_direct_mapped(vaddr):
             phys = self._direct_map_translate(vaddr)
             return phys, self._PAGE_SIZE, 0
 
-        # For non-direct-mapped addresses, we would need page table translation
-        # Currently only supporting direct-mapped kernel addresses
-        # User-space addresses and KSEG2/KSEG3 mapped addresses are not yet supported
-        raise exceptions.InvalidAddressException(
-            self.name,
-            vaddr,
-            "Address not in direct-mapped region (CKSEG0/CKSEG1/XKPHYS)",
-        )
+        # Check cache for user-space addresses
+        page_mask = self._PAGE_SIZE - 1
+        page_vaddr = vaddr & ~page_mask
+        if page_vaddr in self._translation_cache:
+            page_phys, page_size, pte_entry = self._translation_cache[page_vaddr]
+            return page_phys + (vaddr & page_mask), page_size, pte_entry
+
+        # User-space addresses require page table translation
+        return self._translate_3level(vaddr)
+
+    def _virt_to_phys_entry(self, entry: int) -> int:
+        """Convert a virtual address in a page table entry to physical.
+
+        MIPS64 Linux stores virtual addresses (CKSEG0/XKPHYS) in page table entries,
+        not physical addresses. We need to convert them.
+        """
+        # CKSEG0/CKSEG1: 0xffffffff8xxxxxxx -> physical 0x0xxxxxxx
+        if entry >= 0xFFFFFFFF80000000 and entry < 0xFFFFFFFFC0000000:
+            return entry & 0x1FFFFFFF
+        # XKPHYS: 0x80000000xxxxxxxx -> physical 0x0xxxxxxxx
+        if entry >= 0x8000000000000000 and entry < 0xC000000000000000:
+            return entry & 0x07FFFFFFFFFFFFFF
+        # Already physical or invalid
+        return entry & 0xFFFFFFFFFFFFF000
 
     def _translate_3level(self, vaddr: int) -> Tuple[int, int, int]:
-        """Translate using 3-level page table (PGD -> PMD -> PTE)."""
+        """Translate using 3-level page table (PGD -> PMD -> PTE).
+
+        MIPS64 Linux page table entries contain virtual addresses (CKSEG0/XKPHYS),
+        not physical addresses. We convert them during translation.
+        """
         page_mask = self._PAGE_SIZE - 1
         page_vaddr = vaddr & ~page_mask
 
+        # For user-space addresses, use lower 32 bits (MIPS uses 32-bit user VA)
+        # Sign-extended 64-bit addresses like 0xffffdb9ea9 -> 0xffdb9ea9
+        effective_vaddr = vaddr & 0xFFFFFFFF
+
         # Extract indices
-        pgd_idx = (vaddr >> self._PGD_SHIFT) & (self._PTRS_PER_PGD - 1)
-        pmd_idx = (vaddr >> self._PMD_SHIFT) & (self._PTRS_PER_PMD - 1)
-        pte_idx = (vaddr >> self._PTE_SHIFT) & (self._PTRS_PER_PTE - 1)
+        pgd_idx = (effective_vaddr >> self._PGD_SHIFT) & (self._PTRS_PER_PGD - 1)
+        pmd_idx = (effective_vaddr >> self._PMD_SHIFT) & (self._PTRS_PER_PMD - 1)
+        pte_idx = (effective_vaddr >> self._PTE_SHIFT) & (self._PTRS_PER_PTE - 1)
 
         # Level 0: PGD
         pgd_entry_addr = self._pgd_addr + pgd_idx * 8
@@ -179,9 +204,8 @@ class MIPS64(linear.LinearlyMappedLayer):
                 self.name, vaddr, "Invalid PGD entry (null)"
             )
 
-        # PGD entry contains physical address of PMD table
-        # On MIPS, the PGD entry is typically a direct pointer
-        pmd_addr = pgd_entry & self._PTE_PFN_MASK
+        # PGD entry contains virtual address of PMD table - convert to physical
+        pmd_addr = self._virt_to_phys_entry(pgd_entry)
 
         # Level 1: PMD
         pmd_entry = self._read_phys_u64(pmd_addr + pmd_idx * 8)
@@ -190,8 +214,8 @@ class MIPS64(linear.LinearlyMappedLayer):
                 self.name, vaddr, "Invalid PMD entry (null)"
             )
 
-        # PMD entry contains physical address of PTE table
-        pte_addr = pmd_entry & self._PTE_PFN_MASK
+        # PMD entry contains virtual address of PTE table - convert to physical
+        pte_addr = self._virt_to_phys_entry(pmd_entry)
 
         # Level 2: PTE
         pte_entry = self._read_phys_u64(pte_addr + pte_idx * 8)
@@ -202,14 +226,13 @@ class MIPS64(linear.LinearlyMappedLayer):
 
         # Extract physical page frame number
         # MIPS PTE format: PFN is in upper bits, flags in lower bits
-        # The exact format depends on the MIPS variant
-        # For standard MIPS64: PFN starts at bit 6 or higher
+        # For standard MIPS64: PFN starts at bit 6
         page_phys = (pte_entry >> 6) << self._PAGE_SHIFT
 
         # Cache the translation
         self._translation_cache[page_vaddr] = (page_phys, self._PAGE_SIZE, pte_entry)
 
-        return page_phys + (vaddr & page_mask), self._PAGE_SIZE, pte_entry
+        return page_phys + (effective_vaddr & page_mask), self._PAGE_SIZE, pte_entry
 
     def _translate(self, offset: int) -> Tuple[int, int, str]:
         """Translate virtual to physical address."""

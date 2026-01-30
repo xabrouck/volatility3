@@ -108,13 +108,31 @@ def round(addr: int, align: int, up: bool = False) -> int:
 # be done by the overlays that plugins for every OS used, then I don't expect issues when vol3 linux and windows plugins use them
 
 
+def _get_byteorder(value) -> str:
+    byteorder = None
+    vol = getattr(value, "vol", None)
+    data_format = getattr(vol, "data_format", None)
+    byteorder = getattr(data_format, "byteorder", None)
+    if byteorder in ("big", "little"):
+        return byteorder
+    return "little"
+
+
+def _pack_u32(value: int, byteorder: str) -> bytes:
+    fmt = ">I" if byteorder == "big" else "<I"
+    return struct.pack(fmt, value & 0xFFFFFFFF)
+
+
 def convert_ipv4(ip_as_integer):
-    return str(ipaddress.IPv4Address(struct.pack("<I", ip_as_integer)))
+    byteorder = _get_byteorder(ip_as_integer)
+    return str(ipaddress.IPv4Address(_pack_u32(int(ip_as_integer), byteorder)))
 
 
 def convert_ipv6(packed_ip):
     # Replace a run of 0x00s with None
-    return str(ipaddress.IPv6Address(struct.pack("<IIII", *packed_ip)))
+    byteorder = _get_byteorder(packed_ip[0]) if packed_ip else "little"
+    fmt = ">IIII" if byteorder == "big" else "<IIII"
+    return str(ipaddress.IPv6Address(struct.pack(fmt, *packed_ip)))
 
 
 def convert_port(port_as_integer):
