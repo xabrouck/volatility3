@@ -8,7 +8,7 @@ from typing import Optional, Tuple
 from volatility3.framework import constants, interfaces
 from volatility3.framework.automagic import symbol_cache, symbol_finder
 from volatility3.framework.configuration import requirements
-from volatility3.framework.layers import arm, intel, scanners
+from volatility3.framework.layers import arm, intel, mips, scanners
 from volatility3.framework.symbols import linux
 
 vollog = logging.getLogger(__name__)
@@ -30,8 +30,8 @@ class LinuxIntelStacker(interfaces.automagic.StackerLayerInterface):
         layer = context.layers[layer_name]
         join = interfaces.configuration.path_join
 
-        # Never stack on top of a translation layer (Intel or AArch64)
-        if isinstance(layer, (intel.Intel, arm.AArch64)):
+        # Never stack on top of a translation layer (Intel, AArch64, or MIPS64)
+        if isinstance(layer, (intel.Intel, arm.AArch64, mips.MIPS64)):
             return None
 
         linux_banners = symbol_cache.load_cache_manager().get_identifier_dictionary(
@@ -229,7 +229,7 @@ class LinuxAArch64Stacker(interfaces.automagic.StackerLayerInterface):
         join = interfaces.configuration.path_join
 
         # Never stack on top of an existing translation layer
-        if isinstance(layer, (intel.Intel, arm.AArch64)):
+        if isinstance(layer, (intel.Intel, arm.AArch64, mips.MIPS64)):
             return None
 
         linux_banners = symbol_cache.load_cache_manager().get_identifier_dictionary(
@@ -262,6 +262,11 @@ class LinuxAArch64Stacker(interfaces.automagic.StackerLayerInterface):
 
             # Check if this is an AArch64 kernel
             if "swapper_pg_dir" not in table.symbols:
+                continue
+
+            # Skip MIPS64 kernels - check for MIPS-specific TLB symbol
+            if "r4k_tlb_init_pm" in table.symbols:
+                vollog.debug("Skipping AArch64 stacker: MIPS64 kernel detected (r4k_tlb_init_pm)")
                 continue
 
             # For AArch64, swapper_pg_dir is the page global directory
@@ -431,6 +436,122 @@ class LinuxAArch64Stacker(interfaces.automagic.StackerLayerInterface):
             return addr - 0xFFFF000000000000
 
 
+class LinuxMIPS64Stacker(interfaces.automagic.StackerLayerInterface):
+    """Stacker for Linux MIPS64 memory images."""
+
+    stack_order = 35
+    exclusion_list = ["mac", "windows"]
+
+    @classmethod
+    def stack(
+        cls,
+        context: interfaces.context.ContextInterface,
+        layer_name: str,
+        progress_callback: constants.ProgressCallback = None,
+    ) -> Optional[interfaces.layers.DataLayerInterface]:
+        """Attempts to identify linux MIPS64 within this layer."""
+        layer = context.layers[layer_name]
+        join = interfaces.configuration.path_join
+
+        # Never stack on top of an existing translation layer
+        if isinstance(layer, (intel.Intel, arm.AArch64, mips.MIPS64)):
+            return None
+
+        linux_banners = symbol_cache.load_cache_manager().get_identifier_dictionary(
+            operating_system="linux"
+        )
+        if not linux_banners:
+            vollog.info(
+                "No Linux banners found - if this is a linux plugin, please check your symbol files location"
+            )
+            return None
+
+        mss = scanners.MultiStringScanner([x for x in linux_banners if x is not None])
+        for _, banner in layer.scan(
+            context=context, scanner=mss, progress_callback=progress_callback
+        ):
+            vollog.debug(f"Identified banner: {repr(banner)}")
+
+            isf_path = linux_banners.get(banner, None)
+            if not isf_path:
+                continue
+
+            table_name = context.symbol_space.free_table_name("LinuxMIPS64Stacker")
+            table = linux.LinuxKernelIntermedSymbols(
+                context,
+                "temporary." + table_name,
+                name=table_name,
+                isf_url=isf_path,
+            )
+            context.symbol_space.append(table)
+
+            # Check if this is a MIPS64 kernel by looking for swapper_pg_dir
+            # and checking the address range (MIPS64 CKSEG0 starts at 0xffffffff80000000)
+            if "swapper_pg_dir" not in table.symbols:
+                vollog.debug("MIPS64 stacker: swapper_pg_dir not found")
+                continue
+
+            swapper_pg_dir_symbol = table.get_symbol("swapper_pg_dir")
+            swapper_vaddr = swapper_pg_dir_symbol.address
+            vollog.debug(f"MIPS64 stacker: swapper_pg_dir at {hex(swapper_vaddr)}")
+
+            # MIPS64 kernel addresses are in CKSEG0 (0xffffffff80000000 - 0xffffffffbfffffff)
+            # or KSEG2/3 (0xffffffffc0000000 - 0xffffffffffffffff)
+            if not (swapper_vaddr >= 0xFFFFFFFF80000000):
+                vollog.debug(f"MIPS64 stacker: address {hex(swapper_vaddr)} not in MIPS64 range")
+                continue
+
+            vollog.debug(f"Detected MIPS64 kernel at {hex(swapper_vaddr)}")
+
+            # Convert virtual to physical for MIPS64
+            # CKSEG0: 0xffffffff8xxxxxxx -> physical 0x0xxxxxxx (lower 29 bits)
+            pgd_phys = cls.virtual_to_physical_address(swapper_vaddr)
+
+            # Build the new layer
+            new_layer_name = context.layers.free_layer_name("MIPS64Layer")
+            config_path = join("MIPS64Helper", new_layer_name)
+            context.config[join(config_path, "memory_layer")] = layer_name
+            context.config[join(config_path, "page_map_offset")] = pgd_phys
+            context.config[join(config_path, LinuxSymbolFinder.banner_config_key)] = (
+                str(banner, "latin-1")
+            )
+
+            layer = mips.LinuxMIPS64(
+                context,
+                config_path=config_path,
+                name=new_layer_name,
+                metadata={"os": "Linux"},
+            )
+
+            # MIPS64 doesn't use KASLR, set kernel_virtual_offset to 0
+            layer.config["kernel_virtual_offset"] = 0
+
+            if layer:
+                vollog.debug(f"MIPS64 DTB was found at: 0x{pgd_phys:0x}")
+                return layer
+
+        vollog.debug("No suitable linux MIPS64 banner could be matched")
+        return None
+
+    @staticmethod
+    def virtual_to_physical_address(addr: int) -> int:
+        """Converts a virtual MIPS64 Linux address to a physical one.
+
+        MIPS64 memory segments:
+        - CKSEG0 (0xffffffff80000000 - 0xffffffff9fffffff): physical = vaddr & 0x1fffffff
+        - CKSEG1 (0xffffffffa0000000 - 0xffffffffbfffffff): physical = vaddr & 0x1fffffff
+        - XKPHYS (0x8000000000000000 - 0xbfffffffffffffff): physical = vaddr & 0x07ffffffffffffff
+        """
+        # CKSEG0/CKSEG1: lower 29 bits are physical address
+        if addr >= 0xFFFFFFFF80000000 and addr < 0xFFFFFFFFC0000000:
+            return addr & 0x1FFFFFFF
+        # XKPHYS: lower 59 bits are physical address
+        if addr >= 0x8000000000000000 and addr < 0xC000000000000000:
+            return addr & 0x07FFFFFFFFFFFFFF
+        # For mapped addresses, this is a fallback
+        return addr & 0xFFFFFFFF
+
+
 class LinuxSymbolFinder(symbol_finder.SymbolFinder):
     """Linux symbol loader based on uname signature strings."""
 
@@ -481,8 +602,8 @@ class LinuxIntelVMCOREINFOStacker(interfaces.automagic.StackerLayerInterface):
         # Bail out by default unless we can stack properly
         layer = context.layers[layer_name]
 
-        # Never stack on top of a translation layer (Intel or AArch64)
-        if isinstance(layer, (intel.Intel, arm.AArch64)):
+        # Never stack on top of a translation layer (Intel, AArch64, or MIPS64)
+        if isinstance(layer, (intel.Intel, arm.AArch64, mips.MIPS64)):
             return None
 
         linux_banners = symbol_cache.load_cache_manager().get_identifier_dictionary(
