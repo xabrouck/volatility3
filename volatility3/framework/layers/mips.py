@@ -38,9 +38,9 @@ class MIPS64(linear.LinearlyMappedLayer):
     _PAGE_MASK = ~(_PAGE_SIZE - 1)
 
     # MIPS64 PTE flags
-    _PTE_VALID = 1 << 1      # Valid bit (bit 1 in MIPS)
-    _PTE_DIRTY = 1 << 2      # Dirty/Modified bit
-    _PTE_GLOBAL = 1 << 0     # Global bit
+    _PTE_VALID = 1 << 1  # Valid bit (bit 1 in MIPS)
+    _PTE_DIRTY = 1 << 2  # Dirty/Modified bit
+    _PTE_GLOBAL = 1 << 0  # Global bit
 
     # Page table index bits for 3-level (PGD -> PMD -> PTE)
     # With 4KB pages and 8-byte entries:
@@ -156,7 +156,9 @@ class MIPS64(linear.LinearlyMappedLayer):
         # Currently only supporting direct-mapped kernel addresses
         # User-space addresses and KSEG2/KSEG3 mapped addresses are not yet supported
         raise exceptions.InvalidAddressException(
-            self.name, vaddr, "Address not in direct-mapped region (CKSEG0/CKSEG1/XKPHYS)"
+            self.name,
+            vaddr,
+            "Address not in direct-mapped region (CKSEG0/CKSEG1/XKPHYS)",
         )
 
     def _translate_3level(self, vaddr: int) -> Tuple[int, int, int]:
@@ -284,4 +286,3 @@ class MIPS64(linear.LinearlyMappedLayer):
 class LinuxMIPS64(MIPS64):
     """Linux-specific MIPS64 layer."""
 
-    pass

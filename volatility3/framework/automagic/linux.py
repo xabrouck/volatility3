@@ -266,7 +266,9 @@ class LinuxAArch64Stacker(interfaces.automagic.StackerLayerInterface):
 
             # Skip MIPS64 kernels - check for MIPS-specific TLB symbol
             if "r4k_tlb_init_pm" in table.symbols:
-                vollog.debug("Skipping AArch64 stacker: MIPS64 kernel detected (r4k_tlb_init_pm)")
+                vollog.debug(
+                    "Skipping AArch64 stacker: MIPS64 kernel detected (r4k_tlb_init_pm)"
+                )
                 continue
 
             # For AArch64, swapper_pg_dir is the page global directory
@@ -291,7 +293,10 @@ class LinuxAArch64Stacker(interfaces.automagic.StackerLayerInterface):
                 # 3-level can be either 4KB/39-bit or 16KB/47-bit
                 # 16KB/47-bit: linear map at 0xFFFFC00000000000
                 # 4KB/39-bit: linear map at 0xFFFFFF8000000000
-                if swapper_vaddr >= 0xFFFFC00000000000 and swapper_vaddr < 0xFFFFFF8000000000:
+                if (
+                    swapper_vaddr >= 0xFFFFC00000000000
+                    and swapper_vaddr < 0xFFFFFF8000000000
+                ):
                     page_size_kb = 16
                     vollog.debug("Detected 16KB page size (47-bit VA, 3-level)")
                 else:
@@ -314,7 +319,9 @@ class LinuxAArch64Stacker(interfaces.automagic.StackerLayerInterface):
             # Convert virtual to physical for AArch64
             # Use the virtual_to_physical_address method which handles PAGE_OFFSET
             pgd_phys = (
-                cls.virtual_to_physical_address(swapper_pg_dir_symbol.address, page_size_kb)
+                cls.virtual_to_physical_address(
+                    swapper_pg_dir_symbol.address, page_size_kb
+                )
                 + kaslr_shift
             )
 
@@ -498,7 +505,9 @@ class LinuxMIPS64Stacker(interfaces.automagic.StackerLayerInterface):
             # MIPS64 kernel addresses are in CKSEG0 (0xffffffff80000000 - 0xffffffffbfffffff)
             # or KSEG2/3 (0xffffffffc0000000 - 0xffffffffffffffff)
             if not (swapper_vaddr >= 0xFFFFFFFF80000000):
-                vollog.debug(f"MIPS64 stacker: address {hex(swapper_vaddr)} not in MIPS64 range")
+                vollog.debug(
+                    f"MIPS64 stacker: address {hex(swapper_vaddr)} not in MIPS64 range"
+                )
                 continue
 
             vollog.debug(f"Detected MIPS64 kernel at {hex(swapper_vaddr)}")
