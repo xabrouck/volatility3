@@ -1040,15 +1040,12 @@ class VMCoreInfo(interfaces.configuration.VersionableInterface):
         Yields:
             Tuples with the VMCoreInfo ELF note offset and the VMCoreInfo table parsed in a dictionary.
         """
+        import struct
 
-        elf_table_name = intermed.IntermediateSymbolTable.create(
-            context, "elf_symbol_table", "linux", "elf"
-        )
-        module = context.module(elf_table_name, layer_name, 0)
         layer = context.layers[layer_name]
 
-        # Both Elf32_Note and Elf64_Note are of the same size
-        elf_note_size = context.symbol_space[elf_table_name].get_type("Elf64_Note").size
+        # Elf64_Note structure: n_namesz (4), n_descsz (4), n_type (4) = 12 bytes
+        elf_note_size = 12
 
         for vmcoreinfo_offset in layer.scan(
             scanner=scanners.BytesScanner(linux_constants.VMCOREINFO_MAGIC_ALIGNED),
@@ -1058,19 +1055,33 @@ class VMCoreInfo(interfaces.configuration.VersionableInterface):
             # vmcoreinfo_note kernels >= 2.6.24 fd59d231f81cb02870b9cf15f456a897f3669b4e
             vmcoreinfo_elf_note_offset = vmcoreinfo_offset - elf_note_size
 
-            # Elf32_Note and Elf64_Note are identical, so either can be used interchangeably here
-            elf_note = module.object(
-                object_type="Elf64_Note",
-                offset=vmcoreinfo_elf_note_offset,
-                absolute=True,
-            )
+            # Read the ELF note header manually to handle endianness
+            try:
+                header_data = layer.read(vmcoreinfo_elf_note_offset, elf_note_size)
+            except exceptions.InvalidAddressException:
+                continue
 
-            # Ensure that we are within an ELF note
-            if (
-                elf_note.n_namesz != len(linux_constants.VMCOREINFO_MAGIC)
-                or elf_note.n_type != 0
-                or elf_note.n_descsz == 0
-            ):
+            # Try both little-endian and big-endian interpretations
+            # ELF note fields are 32-bit unsigned integers
+            n_namesz = n_descsz = n_type = None
+            for endian in ("<", ">"):
+                n_namesz_try = struct.unpack(endian + "I", header_data[0:4])[0]
+                n_descsz_try = struct.unpack(endian + "I", header_data[4:8])[0]
+                n_type_try = struct.unpack(endian + "I", header_data[8:12])[0]
+
+                # Validate: namesz should be 11 (len("VMCOREINFO\0")), type should be 0
+                if (
+                    n_namesz_try == len(linux_constants.VMCOREINFO_MAGIC)
+                    and n_type_try == 0
+                    and 0 < n_descsz_try < 0x10000
+                ):
+                    n_namesz = n_namesz_try
+                    n_descsz = n_descsz_try
+                    n_type = n_type_try
+                    break
+
+            # Ensure that we are within a valid ELF note
+            if n_namesz is None or n_descsz is None or n_descsz == 0:
                 continue
 
             vmcoreinfo_data_offset = vmcoreinfo_offset + len(
@@ -1078,7 +1089,11 @@ class VMCoreInfo(interfaces.configuration.VersionableInterface):
             )
 
             # Also, confirm this with the first tag, which has consistently been OSRELEASE
-            vmcoreinfo_data = layer.read(vmcoreinfo_data_offset, elf_note.n_descsz)
+            try:
+                vmcoreinfo_data = layer.read(vmcoreinfo_data_offset, n_descsz)
+            except exceptions.InvalidAddressException:
+                continue
+
             if not vmcoreinfo_data.startswith(linux_constants.OSRELEASE_TAG):
                 continue
 
