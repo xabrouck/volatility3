@@ -118,6 +118,9 @@ class PsCallStack(plugins.PluginInterface):
         elif layer_arch in ("Intel32", "Intel64"):
             # Intel: sp is directly in thread.sp
             sp_start = task.thread.sp
+        elif layer_arch == "MIPS64":
+            # MIPS64: sp is in thread.reg29 ($sp register)
+            sp_start = task.thread.reg29
         else:
             raise exceptions.VolatilityException(
                 f"Unsupported architecture: {layer_arch}"

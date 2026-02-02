@@ -523,19 +523,29 @@ class Kallsyms(interfaces.configuration.VersionableInterface):
         layer = self._context.layers[self._layer_name]
         if self._kallsyms_offsets_address:
             # kernels >= 4.6 - Addresses are relative to kallsyms_relative_base
-            # It assumes: CONFIG_KALLSYMS_BASE_RELATIVE=y and CONFIG_KALLSYMS_ABSOLUTE_PERCPU=y
+            # Two modes depending on CONFIG_KALLSYMS_ABSOLUTE_PERCPU:
+            # - If set (common on x86/ARM): positive offsets are absolute, negative are relative
+            # - If not set (common on MIPS): all offsets are unsigned and relative
             signed_int_size = 4
             sym_offset_ptr = self._kallsyms_offsets_address + (index * signed_int_size)
-            sym_addr = self._read_int(sym_offset_ptr, signed_int_size, signed=True)
-            if sym_addr is None:
+            sym_offset = self._read_int(sym_offset_ptr, signed_int_size, signed=True)
+            if sym_offset is None:
                 return None
 
-            if sym_addr < 0:
-                # Negative offsets are relative to kallsyms_relative_base - 1
-                return self._kallsyms_relative_base - 1 - sym_addr
+            if sym_offset < 0:
+                # Negative offsets are always relative to kallsyms_relative_base - 1
+                return self._kallsyms_relative_base - 1 - sym_offset
 
-            # Positive offsets are absolute values
-            return sym_addr & layer.address_mask
+            # For positive offsets, check if ABSOLUTE_PERCPU mode is in use
+            # Heuristic: if offset looks like a valid kernel address, it's absolute
+            # Otherwise, treat as unsigned offset relative to kallsyms_relative_base
+            if sym_offset >= 0xFFFF000000000000 or (sym_offset >= 0x80000000 and sym_offset < 0xFFFFFFFF):
+                # Looks like an absolute kernel address (x86_64 or 32-bit)
+                return sym_offset & layer.address_mask
+            else:
+                # Treat as unsigned offset relative to kallsyms_relative_base
+                # This handles CONFIG_KALLSYMS_ABSOLUTE_PERCPU=n (common on MIPS)
+                return (self._kallsyms_relative_base + (sym_offset & 0xFFFFFFFF)) & layer.address_mask
         elif self._kas_config.addresses_address:
             # kernels < 4.6 - Addresses are absolute
             # unsigned long kallsyms_addresses[]
