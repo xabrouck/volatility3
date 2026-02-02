@@ -64,11 +64,15 @@ class Bash(plugins.PluginInterface, timeliner.TimeLinerInterface):
         is_32bit = not symbols.symbol_table_is_64bit(
             context=self.context, symbol_table_name=vmlinux.symbol_table_name
         )
+        byteorder = symbols.symbol_table_byteorder(
+            context=self.context, symbol_table_name=vmlinux.symbol_table_name
+        )
+        endian_prefix = ">" if byteorder == "big" else "<"
         if is_32bit:
-            pack_format = "I"
+            pack_format = endian_prefix + "I"
             bash_json_file = "bash32"
         else:
-            pack_format = "Q"
+            pack_format = endian_prefix + "Q"
             bash_json_file = "bash64"
 
         bash_table_name = bash.BashIntermedSymbols.create(
@@ -104,6 +108,7 @@ class Bash(plugins.PluginInterface, timeliner.TimeLinerInterface):
                 sections=task_memory_sections,
             ):
                 bang_addrs.append(struct.pack(pack_format, address))
+
 
             history_entries = []
 
