@@ -79,6 +79,11 @@ class Sockscan(plugins.PluginInterface):
         # kernel layer will be virtual and built ontop of a physical layer.
         kernel_layer = self.context.layers[vmlinux.layer_name]
 
+        # Get byteorder from the symbol table (ISF base_types.pointer.endian)
+        byteorder = symbols.symbol_table_byteorder(self.context, vmlinux.symbol_table_name)
+        endian_prefix = ">" if byteorder == "big" else "<"
+        vollog.debug(f"sockscan: detected byteorder={byteorder}")
+
         # detmine if kernel is 64bit or not. The plugin scans for pointers and these need to formated
         # to the correct size so that they can be accurately located in the physical layer.
         if symbols.symbol_table_is_64bit(self.context, vmlinux.symbol_table_name):
@@ -98,11 +103,17 @@ class Sockscan(plugins.PluginInterface):
                 continue
             # use canonicalize to set the appropriate sign extension for the addr
             addr = kernel_layer.canonicalize(needle_addr)
-            packed_addr = struct.pack(pack_format, addr)
-            packed_needles.add(packed_addr)
+            packed_needles.add(struct.pack(endian_prefix + pack_format, addr))
+
+            # Some architectures store kernel pointers using different address forms.
+            # For MIPS64, pointers may use XKPHYS (0x8000...) even when symbols are CKSEG0 (0xffff...).
+            # Add alternate address forms if the layer provides them.
+            if hasattr(kernel_layer, "get_alternate_address_forms"):
+                for alt_addr in kernel_layer.get_alternate_address_forms(addr):
+                    packed_needles.add(struct.pack(endian_prefix + pack_format, alt_addr))
             vollog.log(
                 constants.LOGLEVEL_VVVV,
-                f"Will scan for {symbol_name} using the bytes: {packed_addr.hex()}",
+                f"Will scan for {symbol_name} using the bytes: {', '.join(x.hex() for x in packed_needles)}",
             )
 
         # make a warning if no symbols at all could be resolved.

@@ -28,8 +28,8 @@ class MIPS64(linear.LinearlyMappedLayer):
         "mapped": True,
     }
 
-    # MIPS64 is big-endian and uses 64-bit entries
-    _entry_format = ">Q"  # Big-endian 64-bit
+    # MIPS64 uses big-endian 64-bit entries
+    _entry_format = ">Q"
     _bits_per_register = 64
 
     # Page table constants for 4KB pages
@@ -115,6 +115,29 @@ class MIPS64(linear.LinearlyMappedLayer):
             return struct.unpack(">Q", data)[0]
         except exceptions.InvalidAddressException:
             return 0
+
+    def get_alternate_address_forms(self, addr: int) -> List[int]:
+        """Return alternate address forms for a given address.
+
+        MIPS64 kernel pointers may be stored as either CKSEG0 (0xffff...) or
+        XKPHYS (0x8000...) forms. This method returns the alternate form(s)
+        that should also be scanned for.
+        """
+        alternates = []
+        try:
+            if self._is_direct_mapped(addr):
+                phys = self._direct_map_translate(addr)
+                # If it's CKSEG0/CKSEG1, add XKPHYS form
+                if addr >= self._CKSEG0_BASE and addr < self._KSEG2_BASE:
+                    xkphys_addr = self._XKPHYS_BASE | phys
+                    alternates.append(xkphys_addr)
+                # If it's XKPHYS, add CKSEG0 form (if physical fits in 512MB)
+                elif addr >= self._XKPHYS_BASE and phys < 0x20000000:
+                    ckseg0_addr = self._CKSEG0_BASE | phys
+                    alternates.append(ckseg0_addr)
+        except Exception:
+            pass
+        return alternates
 
     def _is_direct_mapped(self, vaddr: int) -> bool:
         """Check if address is in a directly mapped segment (CKSEG0/CKSEG1/XKPHYS)."""

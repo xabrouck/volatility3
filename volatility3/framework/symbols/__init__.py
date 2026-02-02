@@ -347,3 +347,16 @@ def symbol_table_is_64bit(
         ).size
         == 8
     )
+
+
+def symbol_table_byteorder(
+    context: interfaces.context.ContextInterface, symbol_table_name: str
+) -> str:
+    """Returns the byte order ('little' or 'big') for a symbol table.
+
+    This is determined from the pointer type's data format in the ISF.
+    """
+    ptr_type = context.symbol_space.get_type(
+        symbol_table_name + constants.BANG + "pointer"
+    )
+    return ptr_type.vol.data_format.byteorder
