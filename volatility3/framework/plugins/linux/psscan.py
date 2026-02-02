@@ -96,14 +96,18 @@ class PsScan(interfaces.plugins.PluginInterface):
         """
         vmlinux = context.modules[vmlinux_module_name]
 
-        # check if this image is 32bit or 64bit
+        # check if this image is 32bit or 64bit and get byteorder
         is_32bit = not symbols.symbol_table_is_64bit(
             context=context, symbol_table_name=vmlinux.symbol_table_name
         )
+        byteorder = symbols.symbol_table_byteorder(
+            context=context, symbol_table_name=vmlinux.symbol_table_name
+        )
+        endian_prefix = ">" if byteorder == "big" else "<"
         if is_32bit:
-            pack_format = "I"
+            pack_format = endian_prefix + "I"
         else:
-            pack_format = "Q"
+            pack_format = endian_prefix + "Q"
         # get task_struct to find the offset to the sched_class pointer
         sched_class_offset = vmlinux.get_type("task_struct").members["sched_class"][0]
         kernel_layer = context.layers[kernel_layer_name]
