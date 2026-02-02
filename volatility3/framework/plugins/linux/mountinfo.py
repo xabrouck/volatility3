@@ -123,6 +123,8 @@ class MountInfo(plugins.PluginInterface):
             fields.append("unbindable")
 
         mnt_type = superblock.get_type()
+        if not mnt_type:
+            mnt_type = "unknown"
 
         devname = mnt.get_devname()
         if not devname:
