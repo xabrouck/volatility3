@@ -6,10 +6,10 @@ import logging
 import os
 from typing import Callable, List, Optional, Tuple
 
-from volatility3.framework import constants, interfaces, layers
+from volatility3.framework import constants, interfaces
 from volatility3.framework.automagic import symbol_cache
 from volatility3.framework.configuration import requirements
-from volatility3.framework.layers import scanners
+from volatility3.framework.layers import arm, intel, mips, ppc, scanners
 
 vollog = logging.getLogger(__name__)
 
@@ -138,8 +138,8 @@ class SymbolFinder(interfaces.automagic.AutomagicInterface):
             ]  # type: Iterable[Any]
         else:
             # Swap to the physical layer for scanning
-            # Traverse down a layer if it's a translation layer (Intel or AArch64)
-            if isinstance(layer, (layers.intel.Intel, layers.arm.AArch64)):
+            # Traverse down a layer if it's a translation layer (Intel, AArch64, MIPS64, or PPC32)
+            if isinstance(layer, (intel.Intel, arm.AArch64, mips.MIPS64, ppc.PPC32)):
                 layer = context.layers[layer.config["memory_layer"]]
             banner_list = layer.scan(
                 context=context, scanner=mss, progress_callback=progress_callback

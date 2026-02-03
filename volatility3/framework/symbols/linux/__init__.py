@@ -1077,7 +1077,6 @@ class VMCoreInfo(interfaces.configuration.VersionableInterface):
                 ):
                     n_namesz = n_namesz_try
                     n_descsz = n_descsz_try
-                    n_type = n_type_try
                     break
 
             # Ensure that we are within a valid ELF note

@@ -8,7 +8,7 @@ from typing import Optional, Tuple
 from volatility3.framework import constants, interfaces
 from volatility3.framework.automagic import symbol_cache, symbol_finder
 from volatility3.framework.configuration import requirements
-from volatility3.framework.layers import arm, intel, mips, scanners
+from volatility3.framework.layers import arm, intel, mips, ppc, scanners
 from volatility3.framework.symbols import linux
 
 vollog = logging.getLogger(__name__)
@@ -30,8 +30,8 @@ class LinuxIntelStacker(interfaces.automagic.StackerLayerInterface):
         layer = context.layers[layer_name]
         join = interfaces.configuration.path_join
 
-        # Never stack on top of a translation layer (Intel, AArch64, or MIPS64)
-        if isinstance(layer, (intel.Intel, arm.AArch64, mips.MIPS64)):
+        # Never stack on top of a translation layer (Intel, AArch64, MIPS64, or PPC32)
+        if isinstance(layer, (intel.Intel, arm.AArch64, mips.MIPS64, ppc.PPC32)):
             return None
 
         linux_banners = symbol_cache.load_cache_manager().get_identifier_dictionary(
@@ -229,7 +229,7 @@ class LinuxAArch64Stacker(interfaces.automagic.StackerLayerInterface):
         join = interfaces.configuration.path_join
 
         # Never stack on top of an existing translation layer
-        if isinstance(layer, (intel.Intel, arm.AArch64, mips.MIPS64)):
+        if isinstance(layer, (intel.Intel, arm.AArch64, mips.MIPS64, ppc.PPC32)):
             return None
 
         linux_banners = symbol_cache.load_cache_manager().get_identifier_dictionary(
@@ -262,6 +262,14 @@ class LinuxAArch64Stacker(interfaces.automagic.StackerLayerInterface):
 
             # Check if this is an AArch64 kernel
             if "swapper_pg_dir" not in table.symbols:
+                continue
+
+            # Skip 32-bit kernels (PPC32, ARM32, etc.) - AArch64 uses 64-bit pointers
+            ptr_type = context.symbol_space.get_type(table_name + constants.BANG + "pointer")
+            if ptr_type.size != 8:
+                vollog.debug(
+                    f"Skipping AArch64 stacker: pointer size is {ptr_type.size}, not 8"
+                )
                 continue
 
             # Skip MIPS64 kernels - check for MIPS-specific TLB symbol
@@ -561,6 +569,135 @@ class LinuxMIPS64Stacker(interfaces.automagic.StackerLayerInterface):
         return addr & 0xFFFFFFFF
 
 
+class LinuxPPC32Stacker(interfaces.automagic.StackerLayerInterface):
+    """Stacker for Linux PPC32 (PowerPC 32-bit) memory images."""
+
+    stack_order = 35
+    exclusion_list = ["mac", "windows"]
+
+    @classmethod
+    def stack(
+        cls,
+        context: interfaces.context.ContextInterface,
+        layer_name: str,
+        progress_callback: constants.ProgressCallback = None,
+    ) -> Optional[interfaces.layers.DataLayerInterface]:
+        """Attempts to identify linux PPC32 within this layer."""
+        layer = context.layers[layer_name]
+        join = interfaces.configuration.path_join
+
+        # Never stack on top of an existing translation layer
+        if isinstance(layer, (intel.Intel, arm.AArch64, mips.MIPS64, ppc.PPC32)):
+            return None
+
+        linux_banners = symbol_cache.load_cache_manager().get_identifier_dictionary(
+            operating_system="linux"
+        )
+        if not linux_banners:
+            vollog.info(
+                "No Linux banners found - if this is a linux plugin, please check your symbol files location"
+            )
+            return None
+
+        mss = scanners.MultiStringScanner([x for x in linux_banners if x is not None])
+        for banner_offset, banner in layer.scan(
+            context=context, scanner=mss, progress_callback=progress_callback
+        ):
+            vollog.debug(f"Identified banner: {repr(banner)}")
+
+            isf_path = linux_banners.get(banner, None)
+            if not isf_path:
+                continue
+
+            table_name = context.symbol_space.free_table_name("LinuxPPC32Stacker")
+            table = linux.LinuxKernelIntermedSymbols(
+                context,
+                "temporary." + table_name,
+                name=table_name,
+                isf_url=isf_path,
+            )
+            context.symbol_space.append(table)
+
+            # Check if this is a PPC32 kernel by examining pointer size and address range
+            # PPC32 uses 32-bit pointers and PAGE_OFFSET is typically 0xc0000000
+            if "swapper_pg_dir" not in table.symbols:
+                vollog.debug("PPC32 stacker: swapper_pg_dir not found")
+                continue
+
+            swapper_pg_dir_symbol = table.get_symbol("swapper_pg_dir")
+            swapper_vaddr = swapper_pg_dir_symbol.address
+
+            # PPC32 kernel addresses are in the range 0xc0000000 - 0xffffffff
+            # and should be 32-bit (not 64-bit like MIPS64 or AArch64)
+            if swapper_vaddr >= 0x100000000:
+                vollog.debug(
+                    f"PPC32 stacker: address {hex(swapper_vaddr)} is 64-bit, skipping"
+                )
+                continue
+
+            if swapper_vaddr < 0xC0000000:
+                vollog.debug(
+                    f"PPC32 stacker: address {hex(swapper_vaddr)} not in PPC32 kernel range"
+                )
+                continue
+
+            # Check for PPC-specific symbols to confirm architecture
+            # PPC kernels have machine_check_exception, not idt_table (x86)
+            if "idt_table" in table.symbols:
+                vollog.debug("PPC32 stacker: idt_table found, this is x86, skipping")
+                continue
+
+            vollog.debug(f"Detected PPC32 kernel at {hex(swapper_vaddr)}")
+
+            # Get linux_banner symbol to calculate physical offset
+            if "linux_banner" not in table.symbols:
+                vollog.debug("PPC32 stacker: linux_banner symbol not found")
+                continue
+
+            linux_banner_vaddr = table.get_symbol("linux_banner").address
+
+            # Calculate physical offset: banner_phys = banner_vaddr - PAGE_OFFSET + phys_offset
+            # We know banner_phys (from scan) and banner_vaddr (from symbol table)
+            # PAGE_OFFSET is typically 0xc0000000 for PPC32
+            # So: phys_offset = banner_phys - (banner_vaddr - PAGE_OFFSET)
+            #                 = banner_phys - banner_vaddr + PAGE_OFFSET
+            page_offset = 0xC0000000
+            phys_offset = banner_offset - (linux_banner_vaddr - page_offset)
+
+            vollog.debug(
+                f"PPC32: banner_phys={hex(banner_offset)}, banner_vaddr={hex(linux_banner_vaddr)}, phys_offset={hex(phys_offset)}"
+            )
+
+            # Build the new layer
+            new_layer_name = context.layers.free_layer_name("PPC32Layer")
+            config_path = join("PPC32Helper", new_layer_name)
+            context.config[join(config_path, "memory_layer")] = layer_name
+            context.config[join(config_path, "kernel_virtual_offset")] = page_offset
+            context.config[join(config_path, "kernel_physical_offset")] = phys_offset
+            context.config[join(config_path, LinuxSymbolFinder.banner_config_key)] = (
+                str(banner, "latin-1")
+            )
+
+            new_layer = ppc.PPC32(
+                context,
+                config_path=config_path,
+                name=new_layer_name,
+                metadata={"os": "Linux"},
+            )
+
+            # PPC32 symbols already include PAGE_OFFSET, so module offset is 0
+            new_layer.config["kernel_virtual_offset"] = 0
+
+            if new_layer:
+                vollog.debug(
+                    f"PPC32 layer created with PAGE_OFFSET={hex(page_offset)}, phys_offset={hex(phys_offset)}"
+                )
+                return new_layer
+
+        vollog.debug("No suitable linux PPC32 banner could be matched")
+        return None
+
+
 class LinuxSymbolFinder(symbol_finder.SymbolFinder):
     """Linux symbol loader based on uname signature strings."""
 
@@ -611,8 +748,8 @@ class LinuxIntelVMCOREINFOStacker(interfaces.automagic.StackerLayerInterface):
         # Bail out by default unless we can stack properly
         layer = context.layers[layer_name]
 
-        # Never stack on top of a translation layer (Intel, AArch64, or MIPS64)
-        if isinstance(layer, (intel.Intel, arm.AArch64, mips.MIPS64)):
+        # Never stack on top of a translation layer (Intel, AArch64, MIPS64, or PPC32)
+        if isinstance(layer, (intel.Intel, arm.AArch64, mips.MIPS64, ppc.PPC32)):
             return None
 
         linux_banners = symbol_cache.load_cache_manager().get_identifier_dictionary(

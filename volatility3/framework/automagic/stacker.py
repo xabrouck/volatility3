@@ -143,6 +143,17 @@ class LayerStacker(interfaces.automagic.AutomagicInterface):
                     path, new_context.layers[layer].build_configuration()
                 )
 
+                # Copy the stacked layers from new_context to context
+                for layer_name in reversed(stacked_layers):
+                    if (
+                        layer_name in new_context.layers
+                        and layer_name not in context.layers
+                    ):
+                        context.layers.add_layer(new_context.layers[layer_name])
+
+                # Set the config path to the layer name so the requirement is satisfied
+                context.config[path] = layer
+
                 # Call the construction magic now we may have new things to construct
                 constructor = construct_layers.ConstructionMagic(
                     context,
