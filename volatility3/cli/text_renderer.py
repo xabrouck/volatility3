@@ -131,6 +131,8 @@ def display_disassembly(disasm: renderers.Disassembly) -> str:
             "intel64": capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64),
             "arm": capstone.Cs(capstone.CS_ARCH_ARM, capstone.CS_MODE_ARM),
             "arm64": capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM),
+            "mips64": capstone.Cs(capstone.CS_ARCH_MIPS, capstone.CS_MODE_MIPS64 + capstone.CS_MODE_BIG_ENDIAN),
+            "ppc32": capstone.Cs(capstone.CS_ARCH_PPC, capstone.CS_MODE_32 + capstone.CS_MODE_BIG_ENDIAN),
         }
         output = ""
         if disasm.architecture is not None:

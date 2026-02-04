@@ -72,7 +72,7 @@ class Disassembly(interfaces.renderers.BasicType):
     """A class to indicate that the bytes provided should be disassembled
     (based on the architecture)"""
 
-    possible_architectures = ["intel", "intel64", "arm", "arm64"]
+    possible_architectures = ["intel", "intel64", "arm", "arm64", "mips64", "ppc32"]
 
     def __init__(
         self, data: bytes, offset: int = 0, architecture: str = "intel64"
