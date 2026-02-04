@@ -1063,7 +1063,7 @@ class VMCoreInfo(interfaces.configuration.VersionableInterface):
 
             # Try both little-endian and big-endian interpretations
             # ELF note fields are 32-bit unsigned integers
-            n_namesz = n_descsz = n_type = None
+            n_namesz = n_descsz = None
             for endian in ("<", ">"):
                 n_namesz_try = struct.unpack(endian + "I", header_data[0:4])[0]
                 n_descsz_try = struct.unpack(endian + "I", header_data[4:8])[0]
