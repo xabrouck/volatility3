@@ -678,6 +678,29 @@ class LinuxPPC32Stacker(interfaces.automagic.StackerLayerInterface):
                 str(banner, "latin-1")
             )
 
+            # Get vmalloc-related symbols for page-based translation
+            vmap_area_list = 0
+            mem_map = 0
+            page_struct_size = 36  # Default for PPC32
+
+            if "vmap_area_list" in table.symbols:
+                vmap_area_list = table.get_symbol("vmap_area_list").address
+                vollog.debug(f"PPC32: vmap_area_list at {hex(vmap_area_list)}")
+
+            if "mem_map" in table.symbols:
+                mem_map = table.get_symbol("mem_map").address
+                vollog.debug(f"PPC32: mem_map at {hex(mem_map)}")
+
+            # Get struct page size from symbol table
+            if "page" in table.types:
+                page_type = table.get_type("page")
+                page_struct_size = page_type.size
+                vollog.debug(f"PPC32: struct page size = {page_struct_size}")
+
+            context.config[join(config_path, "vmap_area_list")] = vmap_area_list
+            context.config[join(config_path, "mem_map")] = mem_map
+            context.config[join(config_path, "page_struct_size")] = page_struct_size
+
             new_layer = ppc.PPC32(
                 context,
                 config_path=config_path,
