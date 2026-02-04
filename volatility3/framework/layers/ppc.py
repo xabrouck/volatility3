@@ -358,14 +358,24 @@ class PPC32(linear.LinearlyMappedLayer):
             return result
 
         # Check if the physical address is valid in the base layer
+        # Handle length=0 case (used by translate() to check if address is valid)
         base_layer = self._context.layers[self._base_layer]
-        if not base_layer.is_valid(phys, length):
-            if not ignore_errors:
-                raise exceptions.InvalidAddressException(
-                    layer_name=self.name,
-                    invalid_address=offset,
-                )
-            return result
+        if length == 0:
+            if not base_layer.is_valid(phys):
+                if not ignore_errors:
+                    raise exceptions.InvalidAddressException(
+                        layer_name=self.name,
+                        invalid_address=offset,
+                    )
+                return result
+        else:
+            if not base_layer.is_valid(phys, length):
+                if not ignore_errors:
+                    raise exceptions.InvalidAddressException(
+                        layer_name=self.name,
+                        invalid_address=offset,
+                    )
+                return result
 
         # Format: (offset, sublength, mapped_offset, mapped_length, layer)
         result.append((offset, length, phys, length, self._base_layer))
