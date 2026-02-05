@@ -44,6 +44,18 @@ class PPC32(linear.LinearlyMappedLayer):
     # Typical vmalloc start for PPC32 (can vary based on kernel config)
     _VMALLOC_START = 0xF0000000
 
+    # PPC32 nohash (Book-E) page table constants
+    # 2-level page table: PGD (1024 entries) -> PTE (1024 entries, 64-bit each)
+    _PGD_SHIFT = 22  # 10 bits for PGD index (1024 entries)
+    _PTE_SHIFT = 12  # 10 bits for PTE index (1024 entries)
+    _PGD_SIZE = 4    # 32-bit PGD entries
+    _PTE_SIZE = 8    # 64-bit PTE entries
+
+    # PTE flags for PPC32 nohash (in lower 32 bits of 64-bit PTE)
+    _PAGE_PRESENT = 0x1      # Bit 0: Present/Valid
+    _PAGE_DIRTY = 0x100      # Bit 8: Dirty (page has been written)
+    _PTE_RPN_SHIFT = 12      # RPN starts at bit 12 in 64-bit PTE
+
     @classmethod
     def get_requirements(cls) -> List[interfaces.configuration.RequirementInterface]:
         return [
@@ -86,6 +98,12 @@ class PPC32(linear.LinearlyMappedLayer):
                 optional=True,
                 default=36,
             ),
+            requirements.IntRequirement(
+                name="page_map_offset",
+                description="DTB/PGD physical address for process layer",
+                optional=True,
+                default=0,
+            ),
             requirements.StringRequirement(name="kernel_banner", optional=True),
         ]
 
@@ -94,12 +112,18 @@ class PPC32(linear.LinearlyMappedLayer):
             context=context, config_path=config_path, name=name, metadata=metadata
         )
         self._base_layer = self.config["memory_layer"]
-        self._page_offset = self.config.get("kernel_virtual_offset", self._PAGE_OFFSET)
+        # PAGE_OFFSET is always 0xC0000000 for PPC32 Linux memory layout
+        # (kernel_virtual_offset config is for symbol offset adjustment, not memory layout)
+        self._page_offset = self._PAGE_OFFSET
         self._phys_offset = self.config.get("kernel_physical_offset", 0)
         self._vmalloc_start = self.config.get("vmalloc_start", self._VMALLOC_START)
         self._vmap_area_list = self.config.get("vmap_area_list", 0)
         self._mem_map_ptr = self.config.get("mem_map", 0)
         self._page_struct_size = self.config.get("page_struct_size", 36)
+        self._page_map_offset = self.config.get("page_map_offset", 0)
+
+        if self._page_map_offset:
+            vollog.debug(f"PPC32 layer {name}: page_map_offset={hex(self._page_map_offset)}")
 
         # Cache for vmalloc translations: {vaddr_page: phys_page}
         self._vmalloc_cache: Dict[int, int] = {}
@@ -140,9 +164,23 @@ class PPC32(linear.LinearlyMappedLayer):
     def is_dirty(self, offset: int) -> bool:
         """Returns whether the page at offset is marked dirty.
 
-        PPC32 linear mapping doesn't track dirty bits, always return False.
+        For user-space addresses with page tables, checks the PTE dirty bit.
+        For kernel linear mapping, dirty tracking isn't available.
         """
+        # User-space address - check PTE dirty bit if page tables available
+        if offset < self._page_offset and self._page_map_offset != 0:
+            pte = self._get_pte(offset)
+            if pte is not None:
+                return (pte & self._PAGE_DIRTY) != 0
+        # Kernel space or no page tables - no dirty tracking
         return False
+
+    def _get_pte(self, vaddr: int) -> Optional[int]:
+        """Get the PTE entry for a user-space virtual address.
+
+        Returns the 64-bit PTE value or None if not mapped.
+        """
+        return self._read_pte_entry(vaddr)
 
     def _read_phys_u32(self, phys_addr: int) -> Optional[int]:
         """Read a big-endian 32-bit value from physical memory."""
@@ -319,18 +357,85 @@ class PPC32(linear.LinearlyMappedLayer):
 
         return ppage + page_offset
 
+    def _read_pte_entry(self, vaddr: int) -> Optional[int]:
+        """Read the PTE entry for a virtual address.
+
+        Returns the raw 64-bit PTE value or None if not mapped.
+        Used by both _pagetable_translate and _get_pte (for is_dirty).
+        """
+        if self._page_map_offset == 0:
+            return None
+
+        try:
+            base_layer = self._context.layers[self._base_layer]
+
+            # Calculate PGD index and read entry
+            pgd_index = (vaddr >> self._PGD_SHIFT) & 0x3FF
+            pgd_entry_addr = self._page_map_offset + (pgd_index * self._PGD_SIZE)
+            pgd_data = base_layer.read(pgd_entry_addr, 4)
+            pgd_entry = struct.unpack(">I", pgd_data)[0]
+
+            if pgd_entry == 0:
+                return None
+
+            # PGD entry contains VIRTUAL address of PTE table (kernel pointer)
+            # Convert to physical using linear mapping
+            pte_table_virt = pgd_entry & ~(self._PAGE_SIZE - 1)
+            if pte_table_virt >= self._PAGE_OFFSET:
+                pte_table_phys = pte_table_virt - self._PAGE_OFFSET
+            else:
+                pte_table_phys = pte_table_virt
+
+            # Calculate PTE index and read entry
+            pte_index = (vaddr >> self._PTE_SHIFT) & 0x3FF
+            pte_entry_addr = pte_table_phys + (pte_index * self._PTE_SIZE)
+            pte_data = base_layer.read(pte_entry_addr, 8)
+            return struct.unpack(">Q", pte_data)[0]
+
+        except Exception:
+            return None
+
+    def _pte_to_phys(self, pte_entry: int) -> int:
+        """Extract physical page address from a PTE entry.
+
+        PPC32 e500/Book-E with CONFIG_PTE_64BIT format:
+        RPN spans both words: upper_word has high bits, upper byte of lower_word has low bits.
+        """
+        upper_word = (pte_entry >> 32) & 0xFFFFFFFF
+        lower_word = pte_entry & 0xFFFFFFFF
+        rpn = (upper_word << 8) | ((lower_word >> 24) & 0xFF)
+        return rpn << 12
+
+    def _pagetable_translate(self, vaddr: int) -> Optional[int]:
+        """Translate user-space address using page table walking.
+
+        PPC32 nohash (Book-E) uses a 2-level page table:
+        - PGD: 1024 entries, 4 bytes each (32-bit pointers to PTE tables)
+        - PTE: 1024 entries, 8 bytes each (64-bit PTEs with RPN and flags)
+        """
+        pte_entry = self._read_pte_entry(vaddr)
+        if pte_entry is None:
+            return None
+
+        # Check if PTE is valid (present)
+        if (pte_entry & self._PAGE_PRESENT) == 0:
+            return None
+
+        phys_page = self._pte_to_phys(pte_entry)
+        page_offset = vaddr & (self._PAGE_SIZE - 1)
+        return phys_page + page_offset
+
     def _translate(self, vaddr: int) -> Optional[int]:
         """Translate virtual address to physical address.
 
         PPC32 Linux uses:
+        - Page table walking for user space (if page_map_offset is set)
         - Linear mapping for lowmem (PAGE_OFFSET to VMALLOC_START)
         - Page-based translation for vmalloc region (VMALLOC_START and above)
         """
-        # Ensure address is in kernel space
+        # User space address - use page table translation if available
         if vaddr < self._page_offset:
-            # User space address - would need page table translation
-            # For now, we don't support user space
-            return None
+            return self._pagetable_translate(vaddr)
 
         # Check if address is in vmalloc region
         if vaddr >= self._vmalloc_start:
