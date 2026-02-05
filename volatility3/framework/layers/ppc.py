@@ -44,12 +44,15 @@ class PPC32(linear.LinearlyMappedLayer):
     # Typical vmalloc start for PPC32 (can vary based on kernel config)
     _VMALLOC_START = 0xF0000000
 
-    # PPC32 nohash (Book-E) page table constants
-    # 2-level page table: PGD (1024 entries) -> PTE (1024 entries, 64-bit each)
-    _PGD_SHIFT = 22  # 10 bits for PGD index (1024 entries)
-    _PTE_SHIFT = 12  # 10 bits for PTE index (1024 entries)
+    # PPC32 nohash (Book-E) page table constants with CONFIG_PTE_64BIT
+    # 2-level page table: PGD (2048 entries) -> PTE (512 entries, 64-bit each)
+    # PGDIR_SHIFT=21: 11 bits for PGD index, 9 bits for PTE index
+    _PGD_SHIFT = 21  # 11 bits for PGD index (2048 entries)
+    _PTE_SHIFT = 12  # 9 bits for PTE index (512 entries)
     _PGD_SIZE = 4    # 32-bit PGD entries
     _PTE_SIZE = 8    # 64-bit PTE entries
+    _PGD_ENTRIES = 2048
+    _PTE_ENTRIES = 512
 
     # PTE flags for PPC32 nohash (in lower 32 bits of 64-bit PTE)
     _PAGE_PRESENT = 0x1      # Bit 0: Present/Valid
@@ -370,7 +373,8 @@ class PPC32(linear.LinearlyMappedLayer):
             base_layer = self._context.layers[self._base_layer]
 
             # Calculate PGD index and read entry
-            pgd_index = (vaddr >> self._PGD_SHIFT) & 0x3FF
+            # 11 bits for PGD index (2048 entries) with PGDIR_SHIFT=21
+            pgd_index = (vaddr >> self._PGD_SHIFT) & (self._PGD_ENTRIES - 1)
             pgd_entry_addr = self._page_map_offset + (pgd_index * self._PGD_SIZE)
             pgd_data = base_layer.read(pgd_entry_addr, 4)
             pgd_entry = struct.unpack(">I", pgd_data)[0]
@@ -387,7 +391,8 @@ class PPC32(linear.LinearlyMappedLayer):
                 pte_table_phys = pte_table_virt
 
             # Calculate PTE index and read entry
-            pte_index = (vaddr >> self._PTE_SHIFT) & 0x3FF
+            # 9 bits for PTE index (512 entries) with CONFIG_PTE_64BIT
+            pte_index = (vaddr >> self._PTE_SHIFT) & (self._PTE_ENTRIES - 1)
             pte_entry_addr = pte_table_phys + (pte_index * self._PTE_SIZE)
             pte_data = base_layer.read(pte_entry_addr, 8)
             return struct.unpack(">Q", pte_data)[0]
