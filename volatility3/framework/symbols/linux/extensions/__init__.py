@@ -25,7 +25,7 @@ from typing import (
 from volatility3.framework import constants, exceptions, objects, interfaces, symbols
 from volatility3.framework.renderers import conversion
 from volatility3.framework.constants import linux as linux_constants
-from volatility3.framework.layers import linear, intel
+from volatility3.framework.layers import linear, intel, ppc
 from volatility3.framework.objects import utility
 from volatility3.framework.symbols import generic, linux, intermed
 from volatility3.framework.symbols.linux.extensions import elf
@@ -2726,8 +2726,8 @@ class page(objects.StructType):
         return pageflags_enum
 
     @functools.cached_property
-    def _intel_vmemmap_start(self) -> int:
-        """Determine the start of the struct page array, for Intel systems.
+    def _vmemmap_start(self) -> int:
+        """Determine the start of the struct page array.
 
         Returns:
             int: vmemmap_start address
@@ -2741,8 +2741,8 @@ class page(objects.StructType):
             if vmlinux.has_symbol("vmemmap_base"):
                 # CONFIG_DYNAMIC_MEMORY_LAYOUT - KASLR kernels >= 4.9
                 vmemmap_start = vmlinux.object_from_symbol("vmemmap_base")
-            else:
-                # !CONFIG_DYNAMIC_MEMORY_LAYOUT
+            elif isinstance(vmlinux_layer, intel.Intel):
+                # !CONFIG_DYNAMIC_MEMORY_LAYOUT - Intel specific
                 if vmlinux_layer._maxvirtaddr < 57:
                     # 4-Level paging -> VMEMMAP_START = __VMEMMAP_BASE_L4
                     vmemmap_base_l4 = 0xFFFFEA0000000000
@@ -2755,9 +2755,13 @@ class page(objects.StructType):
                     raise exceptions.VolatilityException(
                         "5-level paging is not yet supported"
                     )
+            else:
+                raise exceptions.VolatilityException(
+                    f"SPARSEMEM without vmemmap_base not supported for {type(vmlinux_layer)}"
+                )
 
         elif vmlinux.has_symbol("mem_map"):
-            # FLATMEM physical memory model, typically 32bit
+            # FLATMEM physical memory model, typically 32bit systems (Intel, PPC32, etc.)
             vmemmap_start = vmlinux.object_from_symbol("mem_map")
 
         elif vmlinux.has_symbol("node_data"):
@@ -2772,6 +2776,16 @@ class page(objects.StructType):
 
         return vmemmap_start
 
+    @functools.cached_property
+    def _intel_vmemmap_start(self) -> int:
+        """Determine the start of the struct page array, for Intel systems.
+        Deprecated: Use _vmemmap_start instead.
+
+        Returns:
+            int: vmemmap_start address
+        """
+        return self._vmemmap_start
+
     def _intel_to_paddr(self) -> int:
         """Converts a page's virtual address to its physical address using the current Intel memory model.
 
@@ -2781,7 +2795,23 @@ class page(objects.StructType):
         vmlinux = linux.LinuxUtilities.get_module_from_volobj_type(self._context, self)
         vmlinux_layer = vmlinux.context.layers[vmlinux.layer_name]
         pagec = vmlinux_layer.canonicalize(self.vol.offset)
-        pfn = (pagec - self._intel_vmemmap_start) // vmlinux.get_type("page").size
+        pfn = (pagec - self._vmemmap_start) // vmlinux.get_type("page").size
+        page_paddr = pfn * vmlinux_layer.page_size
+
+        return page_paddr
+
+    def _ppc_to_paddr(self) -> int:
+        """Converts a page's virtual address to its physical address for PPC systems.
+
+        PPC32 typically uses FLATMEM with mem_map pointing to the struct page array.
+
+        Returns:
+            int: page physical address
+        """
+        vmlinux = linux.LinuxUtilities.get_module_from_volobj_type(self._context, self)
+        vmlinux_layer = vmlinux.context.layers[vmlinux.layer_name]
+        # PPC32 uses simple linear mapping, no canonicalization needed
+        pfn = (self.vol.offset - self._vmemmap_start) // vmlinux.get_type("page").size
         page_paddr = pfn * vmlinux_layer.page_size
 
         return page_paddr
@@ -2796,6 +2826,8 @@ class page(objects.StructType):
         vmlinux_layer = vmlinux.context.layers[vmlinux.layer_name]
         if isinstance(vmlinux_layer, intel.Intel):
             page_paddr = self._intel_to_paddr()
+        elif isinstance(vmlinux_layer, ppc.PPC32):
+            page_paddr = self._ppc_to_paddr()
         else:
             raise exceptions.LayerException(
                 f"Architecture {type(vmlinux_layer)} vmemmap_start calculation isn't currently supported."
