@@ -25,7 +25,7 @@ from typing import (
 from volatility3.framework import constants, exceptions, objects, interfaces, symbols
 from volatility3.framework.renderers import conversion
 from volatility3.framework.constants import linux as linux_constants
-from volatility3.framework.layers import linear, intel, ppc
+from volatility3.framework.layers import linear, intel, ppc, mips
 from volatility3.framework.objects import utility
 from volatility3.framework.symbols import generic, linux, intermed
 from volatility3.framework.symbols.linux.extensions import elf
@@ -2736,12 +2736,21 @@ class page(objects.StructType):
         vmlinux_layer = vmlinux.context.layers[vmlinux.layer_name]
 
         vmemmap_start = None
-        if vmlinux.has_symbol("mem_section"):
-            # SPARSEMEM_VMEMMAP physical memory model: memmap is virtually contiguous
-            if vmlinux.has_symbol("vmemmap_base"):
-                # CONFIG_DYNAMIC_MEMORY_LAYOUT - KASLR kernels >= 4.9
-                vmemmap_start = vmlinux.object_from_symbol("vmemmap_base")
-            elif isinstance(vmlinux_layer, intel.Intel):
+
+        # First check for vmemmap_base (KASLR kernels with CONFIG_DYNAMIC_MEMORY_LAYOUT)
+        if vmlinux.has_symbol("vmemmap_base"):
+            vmemmap_start = vmlinux.object_from_symbol("vmemmap_base")
+
+        # Then check for mem_map (FLATMEM or some SPARSEMEM configurations)
+        elif vmlinux.has_symbol("mem_map"):
+            mem_map_val = vmlinux.object_from_symbol("mem_map")
+            # mem_map can be 0 on SPARSEMEM systems where it's not used
+            if mem_map_val:
+                vmemmap_start = mem_map_val
+
+        # Handle SPARSEMEM without vmemmap_base or valid mem_map
+        if vmemmap_start is None and vmlinux.has_symbol("mem_section"):
+            if isinstance(vmlinux_layer, intel.Intel):
                 # !CONFIG_DYNAMIC_MEMORY_LAYOUT - Intel specific
                 if vmlinux_layer._maxvirtaddr < 57:
                     # 4-Level paging -> VMEMMAP_START = __VMEMMAP_BASE_L4
@@ -2749,30 +2758,19 @@ class page(objects.StructType):
                     vmemmap_start = vmemmap_base_l4
                 else:
                     # 5-Level paging -> VMEMMAP_START = __VMEMMAP_BASE_L5
-                    # FIXME: Once 5-level paging is supported, uncomment the following lines and remove the exception
-                    # vmemmap_base_l5 = 0xFFD4000000000000
-                    # vmemmap_start = vmemmap_base_l5
                     raise exceptions.VolatilityException(
                         "5-level paging is not yet supported"
                     )
             else:
                 raise exceptions.VolatilityException(
-                    f"SPARSEMEM without vmemmap_base not supported for {type(vmlinux_layer)}"
+                    f"SPARSEMEM without vmemmap_base or valid mem_map not supported for {type(vmlinux_layer)}"
                 )
 
-        elif vmlinux.has_symbol("mem_map"):
-            # FLATMEM physical memory model, typically 32bit systems (Intel, PPC32, etc.)
-            vmemmap_start = vmlinux.object_from_symbol("mem_map")
-
-        elif vmlinux.has_symbol("node_data"):
-            raise exceptions.VolatilityException("NUMA systems are not yet supported")
-        else:
-            raise exceptions.VolatilityException("Unsupported Linux memory model")
-
-        if not vmemmap_start:
-            raise exceptions.VolatilityException(
-                "Something went wrong, we shouldn't be here"
-            )
+        if vmemmap_start is None:
+            if vmlinux.has_symbol("node_data"):
+                raise exceptions.VolatilityException("NUMA systems are not yet supported")
+            else:
+                raise exceptions.VolatilityException("Unsupported Linux memory model")
 
         return vmemmap_start
 
@@ -2816,6 +2814,80 @@ class page(objects.StructType):
 
         return page_paddr
 
+    def _mips_to_paddr(self) -> int:
+        """Converts a page's virtual address to its physical address for MIPS64 systems.
+
+        MIPS64 can use either:
+        1. FLATMEM with mem_map pointing to the struct page array
+        2. SPARSEMEM where page structs are allocated in XKPHYS direct-mapped memory
+
+        For SPARSEMEM on MIPS64, page struct addresses are typically in XKPHYS
+        (0x8000000000000000 - 0xbfffffffffffffff) which is a direct physical mapping.
+        We can convert the page struct physical address to a PFN.
+
+        Returns:
+            int: page physical address
+        """
+        vmlinux = linux.LinuxUtilities.get_module_from_volobj_type(self._context, self)
+        vmlinux_layer = vmlinux.context.layers[vmlinux.layer_name]
+        page_struct_size = vmlinux.get_type("page").size
+
+        # Check if we have a valid vmemmap_start (FLATMEM or SPARSEMEM_VMEMMAP)
+        try:
+            vmemmap_start = self._vmemmap_start
+            pfn = (self.vol.offset - vmemmap_start) // page_struct_size
+            page_paddr = pfn * vmlinux_layer.page_size
+            return page_paddr
+        except exceptions.VolatilityException:
+            pass
+
+        # SPARSEMEM without vmemmap: page structs are in XKPHYS direct-mapped memory
+        # XKPHYS: 0x8000000000000000 - 0xbfffffffffffffff -> physical = vaddr & 0x07ffffffffffffff
+        page_vaddr = self.vol.offset
+        XKPHYS_BASE = 0x8000000000000000
+        XKPHYS_END = 0xC000000000000000
+
+        if XKPHYS_BASE <= page_vaddr < XKPHYS_END:
+            # Page struct is in XKPHYS - convert to physical address
+            page_struct_paddr = page_vaddr & 0x07FFFFFFFFFFFFFF
+
+            # For SPARSEMEM, we need to find the section this page belongs to
+            # and calculate the PFN based on the section's mem_map base
+            # This is complex - for now, we'll use a heuristic based on the
+            # physical address of the page struct
+
+            # On MIPS64 Linux with SPARSEMEM, the page structs for a section
+            # are allocated contiguously. The section number can be derived
+            # from the PFN, and the offset within the section gives us the
+            # page's PFN within that section.
+
+            # Simplified approach: assume page structs start at a known physical
+            # address and are contiguous (works for many MIPS64 systems)
+            # We need to find where the first page struct is allocated
+
+            # For Cavium Octeon and similar, page structs are typically allocated
+            # starting from low physical memory. We can estimate the PFN by
+            # dividing the page struct's physical address offset by page_struct_size
+
+            # This is a heuristic - may need adjustment for specific systems
+            # Assume page structs start near physical address 0 for the first section
+            SECTION_SIZE_BITS = 27  # 128MB sections (common for MIPS64)
+            PAGES_PER_SECTION = 1 << (SECTION_SIZE_BITS - vmlinux_layer.page_shift)
+
+            # Calculate which section this page struct belongs to based on its address
+            # and estimate the PFN
+            section_nr = page_struct_paddr // (PAGES_PER_SECTION * page_struct_size)
+            offset_in_section = page_struct_paddr % (PAGES_PER_SECTION * page_struct_size)
+            pfn_in_section = offset_in_section // page_struct_size
+            pfn = section_nr * PAGES_PER_SECTION + pfn_in_section
+
+            page_paddr = pfn * vmlinux_layer.page_size
+            return page_paddr
+
+        raise exceptions.VolatilityException(
+            f"MIPS64 page struct at {page_vaddr:#x} is not in a recognized memory region"
+        )
+
     def to_paddr(self) -> int:
         """Converts a page's virtual address to its physical address using the current CPU memory model.
 
@@ -2828,6 +2900,8 @@ class page(objects.StructType):
             page_paddr = self._intel_to_paddr()
         elif isinstance(vmlinux_layer, ppc.PPC32):
             page_paddr = self._ppc_to_paddr()
+        elif isinstance(vmlinux_layer, mips.MIPS64):
+            page_paddr = self._mips_to_paddr()
         else:
             raise exceptions.LayerException(
                 f"Architecture {type(vmlinux_layer)} vmemmap_start calculation isn't currently supported."
