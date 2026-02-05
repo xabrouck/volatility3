@@ -2817,13 +2817,9 @@ class page(objects.StructType):
     def _mips_to_paddr(self) -> int:
         """Converts a page's virtual address to its physical address for MIPS64 systems.
 
-        MIPS64 can use either:
-        1. FLATMEM with mem_map pointing to the struct page array
-        2. SPARSEMEM where page structs are allocated in XKPHYS direct-mapped memory
-
-        For SPARSEMEM on MIPS64, page struct addresses are typically in XKPHYS
-        (0x8000000000000000 - 0xbfffffffffffffff) which is a direct physical mapping.
-        We can convert the page struct physical address to a PFN.
+        MIPS64 uses SPARSEMEM where page structs are allocated per-section.
+        The page struct address is relative to the section's mem_map base.
+        Formula: pfn = (page_struct_paddr - section_mem_map_paddr) / sizeof(page)
 
         Returns:
             int: page physical address
@@ -2832,61 +2828,64 @@ class page(objects.StructType):
         vmlinux_layer = vmlinux.context.layers[vmlinux.layer_name]
         page_struct_size = vmlinux.get_type("page").size
 
-        # Check if we have a valid vmemmap_start (FLATMEM or SPARSEMEM_VMEMMAP)
-        try:
-            vmemmap_start = self._vmemmap_start
-            pfn = (self.vol.offset - vmemmap_start) // page_struct_size
-            page_paddr = pfn * vmlinux_layer.page_size
-            return page_paddr
-        except exceptions.VolatilityException:
-            pass
-
-        # SPARSEMEM without vmemmap: page structs are in XKPHYS direct-mapped memory
-        # XKPHYS: 0x8000000000000000 - 0xbfffffffffffffff -> physical = vaddr & 0x07ffffffffffffff
         page_vaddr = self.vol.offset
+
+        # MIPS64 page structs are in XKPHYS (0x8000000000000000 - 0xbfffffffffffffff)
         XKPHYS_BASE = 0x8000000000000000
         XKPHYS_END = 0xC000000000000000
 
-        if XKPHYS_BASE <= page_vaddr < XKPHYS_END:
-            # Page struct is in XKPHYS - convert to physical address
-            page_struct_paddr = page_vaddr & 0x07FFFFFFFFFFFFFF
+        if not (XKPHYS_BASE <= page_vaddr < XKPHYS_END):
+            raise exceptions.VolatilityException(
+                f"MIPS64 page struct at {page_vaddr:#x} is not in XKPHYS region"
+            )
 
-            # For SPARSEMEM, we need to find the section this page belongs to
-            # and calculate the PFN based on the section's mem_map base
-            # This is complex - for now, we'll use a heuristic based on the
-            # physical address of the page struct
+        # Convert page struct vaddr to paddr
+        page_struct_paddr = page_vaddr & 0x07FFFFFFFFFFFFFF
 
-            # On MIPS64 Linux with SPARSEMEM, the page structs for a section
-            # are allocated contiguously. The section number can be derived
-            # from the PFN, and the offset within the section gives us the
-            # page's PFN within that section.
+        # For SPARSEMEM, we need to find the section's mem_map base
+        # and subtract it to get the correct PFN
+        if vmlinux.has_symbol("mem_section"):
+            mem_section_sym = vmlinux.get_symbol("mem_section")
+            mem_section_addr = mem_section_sym.address
+            mem_section_size = vmlinux.get_type("mem_section").size
 
-            # Simplified approach: assume page structs start at a known physical
-            # address and are contiguous (works for many MIPS64 systems)
-            # We need to find where the first page struct is allocated
+            # Find the section with the lowest mem_map_base that is <= page_struct_paddr
+            # Multiple sections can share the same mem_map_base, so we need to find
+            # the one with the lowest base that still contains our page struct
+            best_mem_map_base_paddr = None
+            for section_nr in range(256):
+                try:
+                    section = vmlinux.object(
+                        "mem_section",
+                        offset=mem_section_addr + section_nr * mem_section_size,
+                        absolute=True
+                    )
+                    section_mem_map = section.section_mem_map
+                    if not (section_mem_map & 1):  # SECTION_MARKED_PRESENT
+                        continue
 
-            # For Cavium Octeon and similar, page structs are typically allocated
-            # starting from low physical memory. We can estimate the PFN by
-            # dividing the page struct's physical address offset by page_struct_size
+                    # Get mem_map base (clear flags)
+                    mem_map_base = section_mem_map & ~0xF
+                    mem_map_base_paddr = mem_map_base & 0x07FFFFFFFFFFFFFF
 
-            # This is a heuristic - may need adjustment for specific systems
-            # Assume page structs start near physical address 0 for the first section
-            SECTION_SIZE_BITS = 27  # 128MB sections (common for MIPS64)
-            PAGES_PER_SECTION = 1 << (SECTION_SIZE_BITS - vmlinux_layer.page_shift)
+                    # Check if this base could contain our page struct
+                    if mem_map_base_paddr <= page_struct_paddr:
+                        # Keep the lowest base that works
+                        if best_mem_map_base_paddr is None or mem_map_base_paddr < best_mem_map_base_paddr:
+                            best_mem_map_base_paddr = mem_map_base_paddr
 
-            # Calculate which section this page struct belongs to based on its address
-            # and estimate the PFN
-            section_nr = page_struct_paddr // (PAGES_PER_SECTION * page_struct_size)
-            offset_in_section = page_struct_paddr % (PAGES_PER_SECTION * page_struct_size)
-            pfn_in_section = offset_in_section // page_struct_size
-            pfn = section_nr * PAGES_PER_SECTION + pfn_in_section
+                except exceptions.InvalidAddressException:
+                    continue
 
-            page_paddr = pfn * vmlinux_layer.page_size
-            return page_paddr
+            if best_mem_map_base_paddr is not None:
+                pfn = (page_struct_paddr - best_mem_map_base_paddr) // page_struct_size
+                page_paddr = pfn * vmlinux_layer.page_size
+                return page_paddr
 
-        raise exceptions.VolatilityException(
-            f"MIPS64 page struct at {page_vaddr:#x} is not in a recognized memory region"
-        )
+        # Fallback: assume page structs start at physical 0 (simple FLATMEM)
+        pfn = page_struct_paddr // page_struct_size
+        page_paddr = pfn * vmlinux_layer.page_size
+        return page_paddr
 
     def to_paddr(self) -> int:
         """Converts a page's virtual address to its physical address using the current CPU memory model.
