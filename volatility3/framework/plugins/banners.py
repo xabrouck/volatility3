@@ -32,7 +32,15 @@ class Banners(interfaces.plugins.PluginInterface):
 
     def _generator(self):
         layer = self.context.layers[self.config["primary"]]
-        if isinstance(layer, layers.intel.Intel):
+        if isinstance(
+            layer,
+            (
+                layers.intel.Intel,
+                layers.arm.AArch64,
+                layers.mips.MIPS64,
+                layers.ppc.PPC32,
+            ),
+        ):
             layer = self.context.layers[layer.config["memory_layer"]]
         for offset, banner in self.locate_banners(self.context, layer.name):
             yield 0, (offset, banner)
