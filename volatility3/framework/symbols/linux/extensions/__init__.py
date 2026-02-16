@@ -25,7 +25,7 @@ from typing import (
 from volatility3.framework import constants, exceptions, objects, interfaces, symbols
 from volatility3.framework.renderers import conversion
 from volatility3.framework.constants import linux as linux_constants
-from volatility3.framework.layers import linear, intel, ppc, mips
+from volatility3.framework.layers import linear, intel, ppc, mips, arm
 from volatility3.framework.objects import utility
 from volatility3.framework.symbols import generic, linux, intermed
 from volatility3.framework.symbols.linux.extensions import elf
@@ -2887,6 +2887,197 @@ class page(objects.StructType):
         page_paddr = pfn * vmlinux_layer.page_size
         return page_paddr
 
+    def _aarch64_to_paddr(self) -> int:
+        """Converts a page's virtual address to its physical address for AArch64 systems.
+
+        AArch64 typically uses SPARSEMEM_VMEMMAP where vmemmap is a virtual address
+        that maps to the page struct array. The PFN is calculated as:
+        pfn = (page_vaddr - vmemmap_base) / sizeof(struct page)
+
+        For kernels with KASLR, vmemmap_base is randomized and must be derived
+        from mem_section.
+
+        Returns:
+            int: page physical address
+        """
+        vmlinux = linux.LinuxUtilities.get_module_from_volobj_type(self._context, self)
+        vmlinux_layer = vmlinux.context.layers[vmlinux.layer_name]
+        page_struct_size = vmlinux.get_type("page").size
+
+        page_vaddr = self.vol.offset
+        pagec = vmlinux_layer.canonicalize(page_vaddr)
+
+        # First try vmemmap_base if available (some KASLR kernels export this)
+        if vmlinux.has_symbol("vmemmap_base"):
+            vmemmap_start = vmlinux.object_from_symbol("vmemmap_base")
+            if vmemmap_start:
+                pfn = (pagec - vmemmap_start) // page_struct_size
+                page_paddr = pfn * vmlinux_layer.page_size
+                return page_paddr
+
+        # Try mem_map if available (FLATMEM)
+        if vmlinux.has_symbol("mem_map"):
+            mem_map_val = vmlinux.object_from_symbol("mem_map")
+            if mem_map_val:
+                pfn = (pagec - mem_map_val) // page_struct_size
+                page_paddr = pfn * vmlinux_layer.page_size
+                return page_paddr
+
+        # SPARSEMEM_VMEMMAP: derive vmemmap_base from mem_section
+        if vmlinux.has_symbol("mem_section"):
+            page_table_levels = getattr(vmlinux_layer, '_page_table_levels', 4)
+            
+            # SECTION_SIZE_BITS depends on VA_BITS
+            if page_table_levels == 3:
+                SECTION_SIZE_BITS = 27  # 128MB sections for 39-bit VA
+            else:
+                SECTION_SIZE_BITS = 30  # 1GB sections for 48-bit VA
+            PAGES_PER_SECTION = 1 << (SECTION_SIZE_BITS - vmlinux_layer.page_shift)
+
+            mem_section_obj = vmlinux.object_from_symbol("mem_section")
+            mem_section_size = vmlinux.get_type("mem_section").size
+            first_val = int(mem_section_obj)
+            ptr_size = 8
+            
+            # SECTIONS_PER_ROOT for CONFIG_SPARSEMEM_EXTREME
+            SECTIONS_PER_ROOT = vmlinux_layer.page_size // mem_section_size
+
+            # mem_section can be organized as:
+            # 1. Pointer to array of pointers to mem_section (48-bit VA style)
+            # 2. SPARSEMEM_EXTREME 2D array: mem_section[root][idx] (39-bit VA style)
+            #
+            # Try both approaches and use whichever gives valid results
+            
+            if first_val > 0xFFFF000000000000:
+                # First try: treat as pointer to array of pointers (style 1)
+                # Each entry in the array points to a mem_section struct
+                array_base = first_val
+                for section_nr in range(512):
+                    try:
+                        section_ptr = vmlinux.object(
+                            "pointer",
+                            offset=array_base + section_nr * ptr_size,
+                            absolute=True
+                        )
+                        section_ptr_val = int(section_ptr)
+                        if section_ptr_val == 0:
+                            continue
+                        
+                        section = vmlinux.object(
+                            "mem_section",
+                            offset=section_ptr_val,
+                            absolute=True
+                        )
+                        section_mem_map = int(section.section_mem_map)
+                        if not (section_mem_map & 1):
+                            continue
+
+                        encoded_mem_map = section_mem_map & ~0xF
+                        if encoded_mem_map < 0xFFFF000000000000:
+                            continue
+                            
+                        vmemmap_base = encoded_mem_map + section_nr * PAGES_PER_SECTION * page_struct_size
+                        if vmemmap_base > pagec:
+                            continue
+
+                        pfn = (pagec - vmemmap_base) // page_struct_size
+                        page_paddr = pfn * vmlinux_layer.page_size
+                        if page_paddr < 0x400000000:
+                            return page_paddr
+                    except (exceptions.InvalidAddressException, exceptions.PagedInvalidAddressException):
+                        continue
+                
+                # Second try: SPARSEMEM_EXTREME 2D array (style 2)
+                # mem_section[root] points to array of SECTIONS_PER_ROOT mem_section structs
+                for root_nr in range(16):
+                    try:
+                        root_ptr = vmlinux.object(
+                            "pointer",
+                            offset=mem_section_obj.vol.offset + root_nr * ptr_size,
+                            absolute=True
+                        )
+                        root_ptr_val = int(root_ptr)
+                        if root_ptr_val == 0:
+                            continue
+                        
+                        for section_idx in range(SECTIONS_PER_ROOT):
+                            section_nr = root_nr * SECTIONS_PER_ROOT + section_idx
+                            try:
+                                section = vmlinux.object(
+                                    "mem_section",
+                                    offset=root_ptr_val + section_idx * mem_section_size,
+                                    absolute=True
+                                )
+                                section_mem_map = int(section.section_mem_map)
+                                if not (section_mem_map & 1):
+                                    continue
+
+                                encoded_mem_map = section_mem_map & ~0xF
+                                if encoded_mem_map < 0xFFFF000000000000:
+                                    continue
+                                    
+                                vmemmap_base = encoded_mem_map + section_nr * PAGES_PER_SECTION * page_struct_size
+                                if vmemmap_base > pagec:
+                                    continue
+
+                                pfn = (pagec - vmemmap_base) // page_struct_size
+                                page_paddr = pfn * vmlinux_layer.page_size
+                                if page_paddr < 0x400000000:
+                                    return page_paddr
+                            except (exceptions.InvalidAddressException, exceptions.PagedInvalidAddressException):
+                                continue
+                    except (exceptions.InvalidAddressException, exceptions.PagedInvalidAddressException):
+                        continue
+            else:
+                # Non-pointer: direct array of mem_section structs
+                array_base = mem_section_obj.vol.offset
+                for section_nr in range(512):
+                    try:
+                        section = vmlinux.object(
+                            "mem_section",
+                            offset=array_base + section_nr * mem_section_size,
+                            absolute=True
+                        )
+                        section_mem_map = int(section.section_mem_map)
+                        if not (section_mem_map & 1):
+                            continue
+
+                        encoded_mem_map = section_mem_map & ~0xF
+                        if encoded_mem_map < 0xFFFF000000000000:
+                            continue
+                            
+                        vmemmap_base = encoded_mem_map + section_nr * PAGES_PER_SECTION * page_struct_size
+                        if vmemmap_base > pagec:
+                            continue
+
+                        pfn = (pagec - vmemmap_base) // page_struct_size
+                        page_paddr = pfn * vmlinux_layer.page_size
+                        if page_paddr < 0x400000000:
+                            return page_paddr
+                    except (exceptions.InvalidAddressException, exceptions.PagedInvalidAddressException):
+                        continue
+        
+        # Fallback for AArch64: try compile-time vmemmap constants based on VA_BITS
+        page_table_levels = getattr(vmlinux_layer, '_page_table_levels', 4)
+        if page_table_levels == 3:
+            # 39-bit VA vmemmap addresses
+            vmemmap_candidates = [0xFFFFFFFF48000000, 0xFFFFFFFF47000000, 0xFFFFFFFF40000000]
+        else:
+            # 48-bit VA vmemmap addresses
+            vmemmap_candidates = [0xFFFFFC0000000000, 0xFFFFFD0000000000]
+        
+        for vmemmap_base in vmemmap_candidates:
+            if vmemmap_base <= pagec:
+                pfn = (pagec - vmemmap_base) // page_struct_size
+                page_paddr = pfn * vmlinux_layer.page_size
+                # Sanity check: physical address should be reasonable (< 16GB)
+                if page_paddr < 0x400000000:
+                    return page_paddr
+
+        raise exceptions.VolatilityException(
+            f"Cannot determine vmemmap_base for AArch64 page struct at {page_vaddr:#x}"
+        )
+
     def to_paddr(self) -> int:
         """Converts a page's virtual address to its physical address using the current CPU memory model.
 
@@ -2901,6 +3092,8 @@ class page(objects.StructType):
             page_paddr = self._ppc_to_paddr()
         elif isinstance(vmlinux_layer, mips.MIPS64):
             page_paddr = self._mips_to_paddr()
+        elif isinstance(vmlinux_layer, arm.AArch64):
+            page_paddr = self._aarch64_to_paddr()
         else:
             raise exceptions.LayerException(
                 f"Architecture {type(vmlinux_layer)} vmemmap_start calculation isn't currently supported."
