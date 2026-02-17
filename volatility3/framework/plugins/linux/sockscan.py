@@ -80,7 +80,9 @@ class Sockscan(plugins.PluginInterface):
         kernel_layer = self.context.layers[vmlinux.layer_name]
 
         # Get byteorder from the symbol table (ISF base_types.pointer.endian)
-        byteorder = symbols.symbol_table_byteorder(self.context, vmlinux.symbol_table_name)
+        byteorder = symbols.symbol_table_byteorder(
+            self.context, vmlinux.symbol_table_name
+        )
         endian_prefix = ">" if byteorder == "big" else "<"
         vollog.debug(f"sockscan: detected byteorder={byteorder}")
 
@@ -110,7 +112,9 @@ class Sockscan(plugins.PluginInterface):
             # Add alternate address forms if the layer provides them.
             if hasattr(kernel_layer, "get_alternate_address_forms"):
                 for alt_addr in kernel_layer.get_alternate_address_forms(addr):
-                    packed_needles.add(struct.pack(endian_prefix + pack_format, alt_addr))
+                    packed_needles.add(
+                        struct.pack(endian_prefix + pack_format, alt_addr)
+                    )
             vollog.log(
                 constants.LOGLEVEL_VVVV,
                 f"Will scan for {symbol_name} using the bytes: {', '.join(x.hex() for x in packed_needles)}",

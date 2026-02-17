@@ -109,7 +109,6 @@ class Bash(plugins.PluginInterface, timeliner.TimeLinerInterface):
             ):
                 bang_addrs.append(struct.pack(pack_format, address))
 
-
             history_entries = []
 
             if bang_addrs:

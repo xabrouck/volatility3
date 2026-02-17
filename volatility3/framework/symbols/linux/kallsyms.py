@@ -539,13 +539,17 @@ class Kallsyms(interfaces.configuration.VersionableInterface):
             # For positive offsets, check if ABSOLUTE_PERCPU mode is in use
             # Heuristic: if offset looks like a valid kernel address, it's absolute
             # Otherwise, treat as unsigned offset relative to kallsyms_relative_base
-            if sym_offset >= 0xFFFF000000000000 or (sym_offset >= 0x80000000 and sym_offset < 0xFFFFFFFF):
+            if sym_offset >= 0xFFFF000000000000 or (
+                sym_offset >= 0x80000000 and sym_offset < 0xFFFFFFFF
+            ):
                 # Looks like an absolute kernel address (x86_64 or 32-bit)
                 return sym_offset & layer.address_mask
             else:
                 # Treat as unsigned offset relative to kallsyms_relative_base
                 # This handles CONFIG_KALLSYMS_ABSOLUTE_PERCPU=n (common on MIPS)
-                return (self._kallsyms_relative_base + (sym_offset & 0xFFFFFFFF)) & layer.address_mask
+                return (
+                    self._kallsyms_relative_base + (sym_offset & 0xFFFFFFFF)
+                ) & layer.address_mask
         elif self._kas_config.addresses_address:
             # kernels < 4.6 - Addresses are absolute
             # unsigned long kallsyms_addresses[]

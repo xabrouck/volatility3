@@ -265,7 +265,9 @@ class LinuxAArch64Stacker(interfaces.automagic.StackerLayerInterface):
                 continue
 
             # Skip 32-bit kernels (PPC32, ARM32, etc.) - AArch64 uses 64-bit pointers
-            ptr_type = context.symbol_space.get_type(table_name + constants.BANG + "pointer")
+            ptr_type = context.symbol_space.get_type(
+                table_name + constants.BANG + "pointer"
+            )
             if ptr_type.size != 8:
                 vollog.debug(
                     f"Skipping AArch64 stacker: pointer size is {ptr_type.size}, not 8"

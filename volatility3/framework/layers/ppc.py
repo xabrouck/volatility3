@@ -49,15 +49,15 @@ class PPC32(linear.LinearlyMappedLayer):
     # PGDIR_SHIFT=21: 11 bits for PGD index, 9 bits for PTE index
     _PGD_SHIFT = 21  # 11 bits for PGD index (2048 entries)
     _PTE_SHIFT = 12  # 9 bits for PTE index (512 entries)
-    _PGD_SIZE = 4    # 32-bit PGD entries
-    _PTE_SIZE = 8    # 64-bit PTE entries
+    _PGD_SIZE = 4  # 32-bit PGD entries
+    _PTE_SIZE = 8  # 64-bit PTE entries
     _PGD_ENTRIES = 2048
     _PTE_ENTRIES = 512
 
     # PTE flags for PPC32 nohash (in lower 32 bits of 64-bit PTE)
-    _PAGE_PRESENT = 0x1      # Bit 0: Present/Valid
-    _PAGE_DIRTY = 0x100      # Bit 8: Dirty (page has been written)
-    _PTE_RPN_SHIFT = 12      # RPN starts at bit 12 in 64-bit PTE
+    _PAGE_PRESENT = 0x1  # Bit 0: Present/Valid
+    _PAGE_DIRTY = 0x100  # Bit 8: Dirty (page has been written)
+    _PTE_RPN_SHIFT = 12  # RPN starts at bit 12 in 64-bit PTE
 
     @classmethod
     def get_requirements(cls) -> List[interfaces.configuration.RequirementInterface]:
@@ -126,7 +126,9 @@ class PPC32(linear.LinearlyMappedLayer):
         self._page_map_offset = self.config.get("page_map_offset", 0)
 
         if self._page_map_offset:
-            vollog.debug(f"PPC32 layer {name}: page_map_offset={hex(self._page_map_offset)}")
+            vollog.debug(
+                f"PPC32 layer {name}: page_map_offset={hex(self._page_map_offset)}"
+            )
 
         # Cache for vmalloc translations: {vaddr_page: phys_page}
         self._vmalloc_cache: Dict[int, int] = {}
@@ -231,7 +233,9 @@ class PPC32(linear.LinearlyMappedLayer):
         pfn = (page_ptr - mem_map) // self._page_struct_size
         return pfn
 
-    def _build_vmalloc_cache_for_range(self, va_start: int, va_end: int, vm_ptr: int) -> None:
+    def _build_vmalloc_cache_for_range(
+        self, va_start: int, va_end: int, vm_ptr: int
+    ) -> None:
         """Build vmalloc cache entries for a specific vmap_area range."""
         # vm_struct offsets (PPC32 big-endian):
         # addr: offset 4
@@ -257,7 +261,9 @@ class PPC32(linear.LinearlyMappedLayer):
             # If phys_addr is set, use direct mapping
             if vm_phys_addr != 0:
                 for page_idx in range(vm_nr_pages):
-                    vpage = (vm_addr + page_idx * self._PAGE_SIZE) & ~(self._PAGE_SIZE - 1)
+                    vpage = (vm_addr + page_idx * self._PAGE_SIZE) & ~(
+                        self._PAGE_SIZE - 1
+                    )
                     ppage = vm_phys_addr + page_idx * self._PAGE_SIZE
                     self._vmalloc_cache[vpage] = ppage
                 return
@@ -274,7 +280,9 @@ class PPC32(linear.LinearlyMappedLayer):
             pages_data = base_layer.read(pages_phys, vm_nr_pages * 4)
 
             for page_idx in range(vm_nr_pages):
-                page_ptr = struct.unpack(">I", pages_data[page_idx * 4:(page_idx + 1) * 4])[0]
+                page_ptr = struct.unpack(
+                    ">I", pages_data[page_idx * 4 : (page_idx + 1) * 4]
+                )[0]
                 if page_ptr == 0:
                     continue
 
@@ -287,7 +295,9 @@ class PPC32(linear.LinearlyMappedLayer):
                 self._vmalloc_cache[vpage] = ppage
 
         except Exception as e:
-            vollog.debug(f"Error building vmalloc cache for vm_struct at {hex(vm_ptr)}: {e}")
+            vollog.debug(
+                f"Error building vmalloc cache for vm_struct at {hex(vm_ptr)}: {e}"
+            )
 
     def _build_vmalloc_cache(self) -> None:
         """Build the vmalloc translation cache from vmap_area_list."""
@@ -341,7 +351,9 @@ class PPC32(linear.LinearlyMappedLayer):
 
                 current = list_next_new
 
-            vollog.debug(f"Built vmalloc cache with {len(self._vmalloc_cache)} page mappings from {count} vmap_areas")
+            vollog.debug(
+                f"Built vmalloc cache with {len(self._vmalloc_cache)} page mappings from {count} vmap_areas"
+            )
 
         except Exception as e:
             vollog.debug(f"Error building vmalloc cache: {e}")

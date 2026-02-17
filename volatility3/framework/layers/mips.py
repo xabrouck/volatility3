@@ -331,4 +331,3 @@ class MIPS64(linear.LinearlyMappedLayer):
 
 class LinuxMIPS64(MIPS64):
     """Linux-specific MIPS64 layer."""
-
