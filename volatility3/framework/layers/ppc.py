@@ -249,7 +249,7 @@ class PPC32(linear.LinearlyMappedLayer):
             vm_data = base_layer.read(vm_phys, 28)
 
             vm_addr = struct.unpack(">I", vm_data[4:8])[0]
-            vm_size = struct.unpack(">I", vm_data[8:12])[0]
+            # vm_size = struct.unpack(">I", vm_data[8:12])[0]
             vm_pages_ptr = struct.unpack(">I", vm_data[16:20])[0]
             vm_nr_pages = struct.unpack(">I", vm_data[20:24])[0]
             vm_phys_addr = struct.unpack(">I", vm_data[24:28])[0]

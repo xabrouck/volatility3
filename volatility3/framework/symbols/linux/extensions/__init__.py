@@ -1300,7 +1300,11 @@ class vm_area_struct(objects.StructType):
             # is not greater than the size of the file's inode.
             # Check only inode sizes greater than 0 to account for
             # special devices (e.g. "/dev/dri/card0") and prevent false negatives.
-            if inode is not None and inode.i_size > 0 and self.get_page_offset() > inode.i_size:
+            if (
+                inode is not None
+                and inode.i_size > 0
+                and self.get_page_offset() > inode.i_size
+            ):
                 return False
 
         return True
@@ -2699,7 +2703,7 @@ class page(objects.StructType):
     @property
     def index(self) -> int:
         """Returns the page index in the address space.
-        
+
         In older kernels, this is stored in page.index.
         In newer kernels (6.x+ with folios), it's stored in page.__folio_index.
         """
@@ -2784,7 +2788,9 @@ class page(objects.StructType):
 
         if vmemmap_start is None:
             if vmlinux.has_symbol("node_data"):
-                raise exceptions.VolatilityException("NUMA systems are not yet supported")
+                raise exceptions.VolatilityException(
+                    "NUMA systems are not yet supported"
+                )
             else:
                 raise exceptions.VolatilityException("Unsupported Linux memory model")
 
@@ -2874,7 +2880,7 @@ class page(objects.StructType):
                     section = vmlinux.object(
                         "mem_section",
                         offset=mem_section_addr + section_nr * mem_section_size,
-                        absolute=True
+                        absolute=True,
                     )
                     section_mem_map = section.section_mem_map
                     if not (section_mem_map & 1):  # SECTION_MARKED_PRESENT
@@ -2887,7 +2893,10 @@ class page(objects.StructType):
                     # Check if this base could contain our page struct
                     if mem_map_base_paddr <= page_struct_paddr:
                         # Keep the lowest base that works
-                        if best_mem_map_base_paddr is None or mem_map_base_paddr < best_mem_map_base_paddr:
+                        if (
+                            best_mem_map_base_paddr is None
+                            or mem_map_base_paddr < best_mem_map_base_paddr
+                        ):
                             best_mem_map_base_paddr = mem_map_base_paddr
 
                 except exceptions.InvalidAddressException:
@@ -2956,37 +2965,42 @@ class page(objects.StructType):
             memstart = int(vmlinux.object_from_symbol("memstart_addr"))
             if memstart != 0:
                 import ctypes
+
                 # Calculate VMEMMAP_START from VA_BITS using kernel formula:
                 # PAGE_OFFSET = -(1 << VA_BITS)
                 # PAGE_END = -(1 << (VA_BITS - 1))
                 # VMEMMAP_SIZE = (PAGE_END - PAGE_OFFSET) >> (PAGE_SHIFT - STRUCT_PAGE_MAX_SHIFT)
                 # VMEMMAP_START = -VMEMMAP_SIZE - SZ_2M
-                page_table_levels = getattr(vmlinux_layer, '_page_table_levels', 4)
-                page_size_kb = getattr(vmlinux_layer, '_PAGE_SIZE', 4096) // 1024
-                
+                page_table_levels = getattr(vmlinux_layer, "_page_table_levels", 4)
+                page_size_kb = getattr(vmlinux_layer, "_PAGE_SIZE", 4096) // 1024
+
                 # Determine VA_BITS from page table levels and page size
                 if page_size_kb == 16:
                     va_bits = 47 if page_table_levels == 3 else 48
                 else:  # 4KB pages
                     va_bits = 39 if page_table_levels == 3 else 48
-                
+
                 SZ_2M = 0x200000
                 STRUCT_PAGE_MAX_SHIFT = 6  # log2(64) for standard 64-byte struct page
-                
+
                 PAGE_OFFSET = (-(1 << va_bits)) & 0xFFFFFFFFFFFFFFFF
                 PAGE_END = (-(1 << (va_bits - 1))) & 0xFFFFFFFFFFFFFFFF
-                VMEMMAP_SIZE = (PAGE_END - PAGE_OFFSET) >> (vmlinux_layer.page_shift - STRUCT_PAGE_MAX_SHIFT)
+                VMEMMAP_SIZE = (PAGE_END - PAGE_OFFSET) >> (
+                    vmlinux_layer.page_shift - STRUCT_PAGE_MAX_SHIFT
+                )
                 VMEMMAP_START = (-VMEMMAP_SIZE - SZ_2M) & 0xFFFFFFFFFFFFFFFF
-                
+
                 # Use signed arithmetic as kernel does (memstart_addr is s64)
                 memstart_signed = ctypes.c_int64(memstart).value
                 VMEMMAP_START_signed = ctypes.c_int64(VMEMMAP_START).value
                 memstart_pfn_signed = memstart_signed >> vmlinux_layer.page_shift
-                
+
                 # vmemmap = VMEMMAP_START - memstart_pfn * sizeof(struct page)
-                vmemmap_signed = VMEMMAP_START_signed - memstart_pfn_signed * page_struct_size
+                vmemmap_signed = (
+                    VMEMMAP_START_signed - memstart_pfn_signed * page_struct_size
+                )
                 vmemmap = ctypes.c_uint64(vmemmap_signed).value
-                
+
                 page._vmemmap_cache[layer_name] = vmemmap
                 pfn = (pagec - vmemmap) // page_struct_size
                 return pfn * vmlinux_layer.page_size
